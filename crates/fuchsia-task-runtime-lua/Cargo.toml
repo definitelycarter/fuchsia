@@ -1,0 +1,19 @@
+[package]
+name = "fuchsia-task-runtime-lua"
+edition.workspace = true
+version.workspace = true
+description = "Lua implementation of NodeExecutor for fuchsia task execution"
+
+[dependencies]
+fuchsia-task-runtime = { path = "../fuchsia-task-runtime" }
+fuchsia-host-kv = { path = "../fuchsia-host-kv" }
+fuchsia-host-config = { path = "../fuchsia-host-config" }
+fuchsia-host-log = { path = "../fuchsia-host-log" }
+fuchsia-host-http = { path = "../fuchsia-host-http" }
+mlua = { version = "0.10", features = ["lua54", "send", "vendored"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

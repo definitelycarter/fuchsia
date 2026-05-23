@@ -1,6 +1,6 @@
 # Examples
 
-This directory contains example workflows and pre-built components for testing the fuschia CLI.
+This directory contains example workflows and pre-built components for testing the fuchsia CLI.
 
 ## Directory Structure
 

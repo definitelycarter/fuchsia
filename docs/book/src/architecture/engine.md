@@ -1,6 +1,6 @@
 # Orchestrator
 
-The orchestrator (`fuschia-workflow-orchestrator`) owns a workflow graph and walks it wave-by-wave, resolving inputs and dispatching node execution to runtime backends. It has no knowledge of wasmtime, Lua, or any specific VM.
+The orchestrator (`fuchsia-workflow-orchestrator`) owns a workflow graph and walks it wave-by-wave, resolving inputs and dispatching node execution to runtime backends. It has no knowledge of wasmtime, Lua, or any specific VM.
 
 ## Responsibilities
 

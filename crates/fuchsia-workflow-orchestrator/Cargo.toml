@@ -1,0 +1,41 @@
+[package]
+name = "fuchsia-workflow-orchestrator"
+edition.workspace = true
+version.workspace = true
+description = "Workflow orchestrator for fuchsia — DAG execution, scheduling, and input resolution"
+
+[dependencies]
+# Workflow types
+fuchsia-workflow = { path = "../fuchsia-workflow" }
+fuchsia-config = { path = "../fuchsia-config" }
+fuchsia-component-registry = { path = "../fuchsia-component-registry" }
+
+# Runtime abstraction
+fuchsia-task-runtime = { path = "../fuchsia-task-runtime", features = ["wasm", "lua"] }
+
+# Host capability implementations (for constructing Capabilities)
+fuchsia-host-kv = { path = "../fuchsia-host-kv" }
+fuchsia-host-config = { path = "../fuchsia-host-config" }
+fuchsia-host-log = { path = "../fuchsia-host-log" }
+fuchsia-host-http = { path = "../fuchsia-host-http" }
+
+# Async runtime and utilities
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Template resolution
+minijinja = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+fuchsia-task-runtime-lua = { path = "../fuchsia-task-runtime-lua" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

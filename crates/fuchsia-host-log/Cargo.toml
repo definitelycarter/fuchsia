@@ -1,0 +1,8 @@
+[package]
+name = "fuchsia-host-log"
+edition.workspace = true
+version.workspace = true
+description = "Logging host capability for fuchsia task execution"
+
+[dependencies]
+tracing = "0.1"

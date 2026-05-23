@@ -743,25 +743,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia"
+name = "fuchsia"
 version = "0.0.1-alpha.0"
 dependencies = [
  "anyhow",
  "clap",
  "dirs",
- "fuschia-component-registry",
- "fuschia-config",
- "fuschia-resolver",
- "fuschia-task-runtime",
- "fuschia-task-runtime-wasm",
- "fuschia-workflow-orchestrator",
+ "fuchsia-component-registry",
+ "fuchsia-config",
+ "fuchsia-resolver",
+ "fuchsia-task-runtime",
+ "fuchsia-task-runtime-wasm",
+ "fuchsia-workflow-orchestrator",
  "serde_json",
  "tokio",
  "tokio-util",
 ]
 
 [[package]]
-name = "fuschia-artifact"
+name = "fuchsia-artifact"
 version = "0.0.1-alpha.0"
 dependencies = [
  "async-trait",
@@ -773,11 +773,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-component-registry"
+name = "fuchsia-component-registry"
 version = "0.0.1-alpha.0"
 dependencies = [
  "async-trait",
- "fuschia-config",
+ "fuchsia-config",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -785,7 +785,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-config"
+name = "fuchsia-config"
 version = "0.0.1-alpha.0"
 dependencies = [
  "serde",
@@ -793,11 +793,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-host-config"
+name = "fuchsia-host-config"
 version = "0.0.1-alpha.0"
 
 [[package]]
-name = "fuschia-host-http"
+name = "fuchsia-host-http"
 version = "0.0.1-alpha.0"
 dependencies = [
  "reqwest",
@@ -807,40 +807,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-host-kv"
+name = "fuchsia-host-kv"
 version = "0.0.1-alpha.0"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
-name = "fuschia-host-log"
+name = "fuchsia-host-log"
 version = "0.0.1-alpha.0"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
-name = "fuschia-resolver"
+name = "fuchsia-resolver"
 version = "0.0.1-alpha.0"
 dependencies = [
  "async-trait",
- "fuschia-component-registry",
- "fuschia-config",
- "fuschia-workflow",
+ "fuchsia-component-registry",
+ "fuchsia-config",
+ "fuchsia-workflow",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
 ]
 
 [[package]]
-name = "fuschia-task-runtime"
+name = "fuchsia-task-runtime"
 version = "0.0.1-alpha.0"
 dependencies = [
- "fuschia-host-config",
- "fuschia-host-http",
- "fuschia-host-kv",
- "fuschia-host-log",
+ "fuchsia-host-config",
+ "fuchsia-host-http",
+ "fuchsia-host-kv",
+ "fuchsia-host-log",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -848,14 +848,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-task-runtime-lua"
+name = "fuchsia-task-runtime-lua"
 version = "0.0.1-alpha.0"
 dependencies = [
- "fuschia-host-config",
- "fuschia-host-http",
- "fuschia-host-kv",
- "fuschia-host-log",
- "fuschia-task-runtime",
+ "fuchsia-host-config",
+ "fuchsia-host-http",
+ "fuchsia-host-kv",
+ "fuchsia-host-log",
+ "fuchsia-task-runtime",
  "futures",
  "mlua",
  "serde_json",
@@ -863,14 +863,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-task-runtime-wasm"
+name = "fuchsia-task-runtime-wasm"
 version = "0.0.1-alpha.0"
 dependencies = [
- "fuschia-host-config",
- "fuschia-host-http",
- "fuschia-host-kv",
- "fuschia-host-log",
- "fuschia-task-runtime",
+ "fuchsia-host-config",
+ "fuchsia-host-http",
+ "fuchsia-host-kv",
+ "fuchsia-host-log",
+ "fuchsia-task-runtime",
  "futures",
  "serde_json",
  "tokio",
@@ -880,28 +880,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-workflow"
+name = "fuchsia-workflow"
 version = "0.0.1-alpha.0"
 dependencies = [
- "fuschia-config",
+ "fuchsia-config",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
 ]
 
 [[package]]
-name = "fuschia-workflow-orchestrator"
+name = "fuchsia-workflow-orchestrator"
 version = "0.0.1-alpha.0"
 dependencies = [
- "fuschia-component-registry",
- "fuschia-config",
- "fuschia-host-config",
- "fuschia-host-http",
- "fuschia-host-kv",
- "fuschia-host-log",
- "fuschia-task-runtime",
- "fuschia-task-runtime-lua",
- "fuschia-workflow",
+ "fuchsia-component-registry",
+ "fuchsia-config",
+ "fuchsia-host-config",
+ "fuchsia-host-http",
+ "fuchsia-host-kv",
+ "fuchsia-host-log",
+ "fuchsia-task-runtime",
+ "fuchsia-task-runtime-lua",
+ "fuchsia-workflow",
  "futures",
  "minijinja",
  "serde",
@@ -914,7 +914,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuschia-world"
+name = "fuchsia-world"
 version = "0.0.1-alpha.0"
 dependencies = [
  "wasmtime",

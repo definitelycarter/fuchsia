@@ -4,12 +4,12 @@
 
 ```mermaid
 graph TD
-    JSON["Workflow JSON"] --> Config["fuschia-config<br/>Deserialize workflow definition"]
-    Config --> Resolver["fuschia-resolver<br/>Validate DAG, resolve components"]
-    Resolver --> Workflow["fuschia-workflow<br/>Locked workflow + graph traversal"]
+    JSON["Workflow JSON"] --> Config["fuchsia-config<br/>Deserialize workflow definition"]
+    Config --> Resolver["fuchsia-resolver<br/>Validate DAG, resolve components"]
+    Resolver --> Workflow["fuchsia-workflow<br/>Locked workflow + graph traversal"]
     Workflow --> Orchestrator
 
-    subgraph Orchestrator["Orchestrator (fuschia-workflow-orchestrator)"]
+    subgraph Orchestrator["Orchestrator (fuchsia-workflow-orchestrator)"]
         direction TB
         Desc["Graph traversal, input resolution, scheduling<br/>Provisions nodes via runtime backends"]
         Trait["NodeExecutor trait<br/>bytes + capabilities + input → output"]
@@ -24,11 +24,11 @@ graph TD
     JS --> Capabilities
 
     subgraph Capabilities["Host Capabilities (shared)"]
-        KV["fuschia-host-kv<br/>KV store"]
-        HTTP["fuschia-host-http<br/>HTTP client + policy"]
-        ConfigHost["fuschia-host-config<br/>Config lookup"]
-        Log["fuschia-host-log<br/>Logging / OTel"]
-        FS["fuschia-host-fs<br/>Filesystem + policy"]
+        KV["fuchsia-host-kv<br/>KV store"]
+        HTTP["fuchsia-host-http<br/>HTTP client + policy"]
+        ConfigHost["fuchsia-host-config<br/>Config lookup"]
+        Log["fuchsia-host-log<br/>Logging / OTel"]
+        FS["fuchsia-host-fs<br/>Filesystem + policy"]
     end
 ```
 
@@ -36,19 +36,19 @@ graph TD
 
 ```mermaid
 graph BT
-    CLI["fuschia (CLI)"] --> Orchestrator
-    Orchestrator["fuschia-workflow-orchestrator"] --> WasmRT & LuaRT
-    Orchestrator --> FConfig["fuschia-config"]
-    Orchestrator --> FRegistry["fuschia-component-registry"]
-    Orchestrator --> FWorkflow["fuschia-workflow"]
+    CLI["fuchsia (CLI)"] --> Orchestrator
+    Orchestrator["fuchsia-workflow-orchestrator"] --> WasmRT & LuaRT
+    Orchestrator --> FConfig["fuchsia-config"]
+    Orchestrator --> FRegistry["fuchsia-component-registry"]
+    Orchestrator --> FWorkflow["fuchsia-workflow"]
 
-    WasmRT["fuschia-task-runtime-wasm"] --> Trait
-    LuaRT["fuschia-task-runtime-lua"] --> Trait
+    WasmRT["fuchsia-task-runtime-wasm"] --> Trait
+    LuaRT["fuchsia-task-runtime-lua"] --> Trait
 
-    Trait["fuschia-task-runtime<br/>(trait)"] --> HostKV["fuschia-host-kv"]
-    Trait --> HostConfig["fuschia-host-config"]
-    Trait --> HostLog["fuschia-host-log"]
-    Trait --> HostHTTP["fuschia-host-http"]
+    Trait["fuchsia-task-runtime<br/>(trait)"] --> HostKV["fuchsia-host-kv"]
+    Trait --> HostConfig["fuchsia-host-config"]
+    Trait --> HostLog["fuchsia-host-log"]
+    Trait --> HostHTTP["fuchsia-host-http"]
 ```
 
 ## Key Principles

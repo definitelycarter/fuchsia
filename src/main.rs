@@ -6,19 +6,19 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use fuschia_component_registry::FsComponentRegistry;
-use fuschia_config::WorkflowDef;
-use fuschia_resolver::{Resolver, StandardResolver};
-use fuschia_task_runtime::{RuntimeRegistry, RuntimeType};
-use fuschia_task_runtime_wasm::WasmExecutor;
-use fuschia_workflow_orchestrator::{Orchestrator, OrchestratorConfig};
+use fuchsia_component_registry::FsComponentRegistry;
+use fuchsia_config::WorkflowDef;
+use fuchsia_resolver::{Resolver, StandardResolver};
+use fuchsia_task_runtime::{RuntimeRegistry, RuntimeType};
+use fuchsia_task_runtime_wasm::WasmExecutor;
+use fuchsia_workflow_orchestrator::{Orchestrator, OrchestratorConfig};
 
-/// Fuschia - A workflow engine built on WebAssembly components
+/// Fuchsia - A workflow engine built on WebAssembly components
 #[derive(Parser)]
-#[command(name = "fuschia")]
+#[command(name = "fuchsia")]
 #[command(version, about, long_about = None)]
 struct Cli {
-  /// Path to the data directory (default: ~/.fuschia)
+  /// Path to the data directory (default: ~/.fuchsia)
   #[arg(long, global = true)]
   data_dir: Option<PathBuf>,
 
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
   let data_dir = cli.data_dir.unwrap_or_else(|| {
     dirs::home_dir()
       .expect("could not determine home directory")
-      .join(".fuschia")
+      .join(".fuchsia")
   });
 
   match cli.command {
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
       }
     },
     None => {
-      println!("fuschia - use --help to see available commands");
+      println!("fuchsia - use --help to see available commands");
     }
   }
 

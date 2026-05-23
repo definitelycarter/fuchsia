@@ -1,10 +1,10 @@
 [package]
-name = "fuschia"
+name = "fuchsia"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "fuschia"
+name = "fuchsia"
 path = "src/main.rs"
 
 [workspace]
@@ -14,20 +14,20 @@ exclude = [
   "test-components/test-task-component",
 ]
 members = [
-  "crates/fuschia-artifact",
-  "crates/fuschia-component-registry",
-  "crates/fuschia-config",
-  "crates/fuschia-host-config",
-  "crates/fuschia-host-http",
-  "crates/fuschia-host-kv",
-  "crates/fuschia-host-log",
-  "crates/fuschia-resolver",
-  "crates/fuschia-task-runtime",
-  "crates/fuschia-task-runtime-lua",
-  "crates/fuschia-task-runtime-wasm",
-  "crates/fuschia-workflow",
-  "crates/fuschia-workflow-orchestrator",
-  "crates/fuschia-world",
+  "crates/fuchsia-artifact",
+  "crates/fuchsia-component-registry",
+  "crates/fuchsia-config",
+  "crates/fuchsia-host-config",
+  "crates/fuchsia-host-http",
+  "crates/fuchsia-host-kv",
+  "crates/fuchsia-host-log",
+  "crates/fuchsia-resolver",
+  "crates/fuchsia-task-runtime",
+  "crates/fuchsia-task-runtime-lua",
+  "crates/fuchsia-task-runtime-wasm",
+  "crates/fuchsia-workflow",
+  "crates/fuchsia-workflow-orchestrator",
+  "crates/fuchsia-world",
 ]
 
 [dependencies]
@@ -38,9 +38,9 @@ tokio-util = "0.7"
 serde_json = "1"
 anyhow = "1"
 
-fuschia-config = { path = "crates/fuschia-config" }
-fuschia-component-registry = { path = "crates/fuschia-component-registry" }
-fuschia-resolver = { path = "crates/fuschia-resolver" }
-fuschia-workflow-orchestrator = { path = "crates/fuschia-workflow-orchestrator" }
-fuschia-task-runtime = { path = "crates/fuschia-task-runtime", features = ["wasm"] }
-fuschia-task-runtime-wasm = { path = "crates/fuschia-task-runtime-wasm" }
+fuchsia-config = { path = "crates/fuchsia-config" }
+fuchsia-component-registry = { path = "crates/fuchsia-component-registry" }
+fuchsia-resolver = { path = "crates/fuchsia-resolver" }
+fuchsia-workflow-orchestrator = { path = "crates/fuchsia-workflow-orchestrator" }
+fuchsia-task-runtime = { path = "crates/fuchsia-task-runtime", features = ["wasm"] }
+fuchsia-task-runtime-wasm = { path = "crates/fuchsia-task-runtime-wasm" }

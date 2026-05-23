@@ -3,7 +3,7 @@ name: bench
 description: Use when running, adding, or interpreting benchmarks in this repo. Covers the targeted before/after workflow with criterion, noise thresholds, and how to add a new bench. Bench coverage is still ramping up — this skill grows as harnesses are added.
 ---
 
-# Benchmarks in fuschia
+# Benchmarks in fuchsia
 
 We benchmark with **criterion**, targeted before/after by default: capture the affected benches on `main`, make the change, capture them again, compare. Always running the full suite is too slow to be a habit.
 
@@ -27,11 +27,11 @@ Use this to pick which benches to run for a given change. **Widen when uncertain
 
 Empty until harnesses exist. As benches are added, populate rows here keyed to source areas. Likely first candidates, based on the current architecture, are:
 
-- `crates/fuschia-workflow-orchestrator/` — graph traversal, scheduling, input resolution (minijinja), type coercion
-- `crates/fuschia-task-runtime-wasm/` — wasm component instantiation, epoch-based timeout overhead, component caching
-- `crates/fuschia-task-runtime-lua/` — Lua executor invocation cost
-- `crates/fuschia-resolver/` — `WorkflowDef` → `Workflow` resolution, DAG validation, loop node recursion
-- `crates/fuschia-component-registry/` — manifest load, digest verification
+- `crates/fuchsia-workflow-orchestrator/` — graph traversal, scheduling, input resolution (minijinja), type coercion
+- `crates/fuchsia-task-runtime-wasm/` — wasm component instantiation, epoch-based timeout overhead, component caching
+- `crates/fuchsia-task-runtime-lua/` — Lua executor invocation cost
+- `crates/fuchsia-resolver/` — `WorkflowDef` → `Workflow` resolution, DAG validation, loop node recursion
+- `crates/fuchsia-component-registry/` — manifest load, digest verification
 
 When you add a bench, add a row here mapping the source area to the harness name.
 
@@ -69,7 +69,7 @@ Don't pad commit bodies with bench numbers when nothing meaningfully moved.
 
 ## 5. Adding a new benchmark
 
-First bench in a crate? Add the dev-dependency. Fuschia's workspace doesn't use `[workspace.dependencies]`, so add it per-crate:
+First bench in a crate? Add the dev-dependency. Fuchsia's workspace doesn't use `[workspace.dependencies]`, so add it per-crate:
 
 ```toml
 # crates/<crate>/Cargo.toml

@@ -1,6 +1,6 @@
 # Resolution
 
-Resolution transforms a `WorkflowDef` (config) into a `Workflow` (locked). This is handled by the `fuschia-resolver` crate.
+Resolution transforms a `WorkflowDef` (config) into a `Workflow` (locked). This is handled by the `fuchsia-resolver` crate.
 
 ## What Resolution Does
 

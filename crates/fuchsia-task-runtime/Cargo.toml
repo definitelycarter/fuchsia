@@ -1,0 +1,20 @@
+[package]
+name = "fuchsia-task-runtime"
+edition.workspace = true
+version.workspace = true
+description = "Runtime abstraction for fuchsia task execution — NodeExecutor trait and Capabilities"
+
+[features]
+default = ["wasm"]
+wasm = []
+lua = []
+
+[dependencies]
+fuchsia-host-kv = { path = "../fuchsia-host-kv" }
+fuchsia-host-config = { path = "../fuchsia-host-config" }
+fuchsia-host-log = { path = "../fuchsia-host-log" }
+fuchsia-host-http = { path = "../fuchsia-host-http" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }

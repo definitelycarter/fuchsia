@@ -1,0 +1,9 @@
+package fuchsia:fuchsia;
+
+/// Host world combining all imports and exports for the fuchsia runtime.
+/// This is used by the engine to instantiate and run components.
+world host {
+    include fuchsia:platform/platform@0.1.0;
+
+    export fuchsia:task/task@0.1.0;
+}

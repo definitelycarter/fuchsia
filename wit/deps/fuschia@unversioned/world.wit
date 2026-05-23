@@ -1,9 +1,0 @@
-package fuschia:fuschia;
-
-/// Host world combining all imports and exports for the fuschia runtime.
-/// This is used by the engine to instantiate and run components.
-world host {
-    include fuschia:platform/platform@0.1.0;
-
-    export fuschia:task/task@0.1.0;
-}

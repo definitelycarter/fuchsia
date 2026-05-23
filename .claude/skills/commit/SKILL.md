@@ -3,7 +3,7 @@ name: commit
 description: Use when the user asks to commit changes in this repo. Runs format/test gates, audits for forbidden patterns, drafts a message in repo style, and stages specific files. Never auto-commits without explicit user approval.
 ---
 
-# Committing changes in fuschia
+# Committing changes in fuchsia
 
 Only commit when the user explicitly asks for it. Never amend; always create a new commit. Always include a `Co-Authored-By` trailer (see step 5). `AGENTS.md` is explicit: do not auto-commit or push without user approval.
 

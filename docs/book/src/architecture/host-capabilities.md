@@ -18,7 +18,7 @@ The actual logic (making HTTP requests, reading KV, writing logs) lives in one p
 
 Each capability is its own crate. These crates have **zero knowledge** of wasmtime, Lua, or any VM.
 
-### `fuschia-host-kv` — Key-Value Store
+### `fuchsia-host-kv` — Key-Value Store
 
 Workflow-scoped key-value storage. Shared across tasks within an execution — node 1 can write, node 2 can read.
 
@@ -36,7 +36,7 @@ Implementations:
 - `InMemoryKvStore` — HashMap-based, for single-execution or testing
 - Future: Redis-backed for persistence across executions
 
-### `fuschia-host-config` — Configuration
+### `fuchsia-host-config` — Configuration
 
 Read-only configuration lookup. Values come from the workflow node definition.
 
@@ -48,7 +48,7 @@ pub trait ConfigHost: Send + Sync {
 
 Implementation: `MapConfig` — backed by `HashMap<String, String>`.
 
-### `fuschia-host-log` — Logging
+### `fuchsia-host-log` — Logging
 
 Routes component logs to the host's tracing infrastructure with execution context.
 
@@ -60,7 +60,7 @@ pub trait LogHost: Send + Sync {
 
 Implementation: `TracingLogHost` — routes to the `tracing` crate with `execution_id` and `node_id` as span fields.
 
-### `fuschia-host-http` — HTTP Client
+### `fuchsia-host-http` — HTTP Client
 
 HTTP requests with policy enforcement.
 
@@ -77,7 +77,7 @@ pub trait HttpHost: Send + Sync {
 
 Implementation: `ReqwestHttpHost` — validates each request against the policy before making the call. Requests to disallowed hosts are rejected with `HttpError::HostNotAllowed`. Empty `allowed_hosts` denies all. `HttpPolicy::allow_all()` permits all hosts.
 
-### `fuschia-host-fs` — Filesystem (Future)
+### `fuchsia-host-fs` — Filesystem (Future)
 
 Filesystem access with path policy enforcement.
 

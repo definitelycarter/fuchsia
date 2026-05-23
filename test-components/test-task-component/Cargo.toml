@@ -10,6 +10,6 @@ crate-type = ["cdylib"]
 wit-bindgen = "0.41"
 
 [package.metadata.component]
-package = "fuschia:test-task"
+package = "fuchsia:test-task"
 
 [package.metadata.component.dependencies]

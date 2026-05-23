@@ -1,0 +1,10 @@
+[package]
+name = "fuchsia-host-kv"
+edition.workspace = true
+version.workspace = true
+description = "Key-value store trait and in-memory implementation for fuchsia host capabilities"
+
+[dependencies]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

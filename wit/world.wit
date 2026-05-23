@@ -1,17 +1,17 @@
-package fuschia:platform@0.1.0;
+package fuchsia:platform@0.1.0;
 
 /// Base platform world with common imports for all components.
 /// Note: HTTP support (wasi:http/outgoing-handler) will be added later
 /// once WASI integration is complete.
 world platform {
-  import fuschia:kv/kv@0.1.0;
-  import fuschia:config/config@0.1.0;
-  import fuschia:log/log@0.1.0;
+  import fuchsia:kv/kv@0.1.0;
+  import fuchsia:config/config@0.1.0;
+  import fuchsia:log/log@0.1.0;
 }
 
 /// World for task components.
 /// Tasks execute work within a workflow node.
 world task-component {
   include platform;
-  export fuschia:task/task@0.1.0;
+  export fuchsia:task/task@0.1.0;
 }

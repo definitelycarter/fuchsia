@@ -20,7 +20,7 @@ my-component-1.0.0.fcpkg
 Installed components live in a predictable directory structure:
 
 ```
-~/.fuschia/components/
+~/.fuchsia/components/
 ├── my-org--http-fetch--1.0.0/
 │   ├── manifest.json
 │   ├── component.wasm

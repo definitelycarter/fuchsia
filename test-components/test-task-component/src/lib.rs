@@ -8,14 +8,14 @@ struct TestTask;
 
 export!(TestTask);
 
-impl exports::fuschia::task::task::Guest for TestTask {
+impl exports::fuchsia::task::task::Guest for TestTask {
   fn execute(
-    ctx: exports::fuschia::task::task::Context,
+    ctx: exports::fuchsia::task::task::Context,
     data: String,
-  ) -> Result<exports::fuschia::task::task::Output, String> {
+  ) -> Result<exports::fuchsia::task::task::Output, String> {
     // Use host imports to demonstrate they work
-    fuschia::log::log::log(
-      fuschia::log::log::Level::Info,
+    fuchsia::log::log::log(
+      fuchsia::log::log::Level::Info,
       &format!(
         "Executing task {} in node {} (execution: {})",
         ctx.task_id, ctx.node_id, ctx.execution_id
@@ -23,11 +23,11 @@ impl exports::fuschia::task::task::Guest for TestTask {
     );
 
     // Test KV store
-    fuschia::kv::kv::set("last_input", &data);
-    let stored = fuschia::kv::kv::get("last_input");
+    fuchsia::kv::kv::set("last_input", &data);
+    let stored = fuchsia::kv::kv::get("last_input");
 
     // Test config
-    let config_val = fuschia::config::config::get("test_key");
+    let config_val = fuchsia::config::config::get("test_key");
 
     // Echo back the input with some metadata
     let config_json = match config_val {
@@ -41,6 +41,6 @@ impl exports::fuschia::task::task::Guest for TestTask {
       config_json
     );
 
-    Ok(exports::fuschia::task::task::Output { data: output })
+    Ok(exports::fuchsia::task::task::Output { data: output })
   }
 }

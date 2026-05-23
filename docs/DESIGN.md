@@ -1,6 +1,6 @@
-# Fuschia Design Document
+# Fuchsia Design Document
 
-Fuschia is a workflow engine similar to n8n, built on WebAssembly components using WIT (WebAssembly Interface Types). Each workflow node is a Wasm component with explicitly defined capabilities.
+Fuchsia is a workflow engine similar to n8n, built on WebAssembly components using WIT (WebAssembly Interface Types). Each workflow node is a Wasm component with explicitly defined capabilities.
 
 ## Execution Model
 
@@ -203,7 +203,7 @@ my-component-1.0.0.fcpkg
 Installed components live in a predictable directory structure:
 
 ```
-~/.fuschia/components/
+~/.fuchsia/components/
 ├── my-org--http-fetch--1.0.0/
 │   ├── manifest.json
 │   ├── component.wasm
@@ -564,8 +564,8 @@ The engine manages all artifact storage and path resolution. Wasm components nev
 Artifacts are not automatically deleted. Cleanup is managed manually via CLI:
 
 **CLI Commands:**
-- Query completed workflows by time range (e.g., `fuschia workflows list --completed-before 2026-01-01`)
-- Delete artifacts for a workflow (e.g., `fuschia artifacts delete --workflow-id wf_abc`)
+- Query completed workflows by time range (e.g., `fuchsia workflows list --completed-before 2026-01-01`)
+- Delete artifacts for a workflow (e.g., `fuchsia artifacts delete --workflow-id wf_abc`)
 
 **Separation of Concerns:**
 - Deleting artifacts does **not** delete workflow execution records
@@ -721,7 +721,7 @@ The workflow engine orchestrates execution, handling graph traversal, parallel s
                          │              │
                          ▼              ▼
 ┌──────────────────────────┐ ┌──────────────────────────────┐
-│    fuschia-task-host     │ │   fuschia-trigger-host       │
+│    fuchsia-task-host     │ │   fuchsia-trigger-host       │
 │  - execute_task(...)     │ │  - execute_trigger(...)      │
 │  - task wasm execution   │ │  - trigger wasm execution    │
 └──────────────────────────┘ └──────────────────────────────┘
@@ -730,7 +730,7 @@ The workflow engine orchestrates execution, handling graph traversal, parallel s
 **Separation of concerns:**
 - `WorkflowRunner` handles triggering mechanisms (channels, webhooks, poll timers)
 - `Runtime` handles execution logic (trigger execution, graph traversal, scheduling, input resolution)
-- `fuschia-task-host` / `fuschia-trigger-host` handle wasm component execution
+- `fuchsia-task-host` / `fuchsia-trigger-host` handle wasm component execution
 
 ### WorkflowRunner
 
@@ -816,11 +816,11 @@ The wasmtime hosting layer is split into three crates:
 
 | Crate | Responsibility |
 |-------|----------------|
-| `fuschia-host` | Shared wasmtime infrastructure: Engine configuration, Store setup, epoch-based timeout utilities, pluggable KvStore trait |
-| `fuschia-task-host` | Task-specific execution. Imports `fuschia-host`, binds to `task-component` world, invokes `task.execute` |
-| `fuschia-trigger-host` | Trigger-specific execution. Imports `fuschia-host`, binds to `trigger-component` world, invokes `trigger.handle` |
+| `fuchsia-host` | Shared wasmtime infrastructure: Engine configuration, Store setup, epoch-based timeout utilities, pluggable KvStore trait |
+| `fuchsia-task-host` | Task-specific execution. Imports `fuchsia-host`, binds to `task-component` world, invokes `task.execute` |
+| `fuchsia-trigger-host` | Trigger-specific execution. Imports `fuchsia-host`, binds to `trigger-component` world, invokes `trigger.handle` |
 
-**Rationale:** `fuschia-host` provides the wasmtime foundation without knowing about tasks or triggers. The specialized crates compose it with their WIT world bindings.
+**Rationale:** `fuchsia-host` provides the wasmtime foundation without knowing about tasks or triggers. The specialized crates compose it with their WIT world bindings.
 
 ### Component Lifecycle
 
@@ -833,9 +833,9 @@ Components have access to these host-provided imports:
 
 | Import | Scope | Description |
 |--------|-------|-------------|
-| `fuschia:kv/kv` | Per-execution | Key-value store isolated to the workflow execution. Pluggable via `KvStore` trait (InMemoryKvStore for local, Redis for production). |
-| `fuschia:config/config` | Per-component | Configuration values from the workflow node definition |
-| `fuschia:log/log` | Per-execution | Logging routed to OpenTelemetry with execution context |
+| `fuchsia:kv/kv` | Per-execution | Key-value store isolated to the workflow execution. Pluggable via `KvStore` trait (InMemoryKvStore for local, Redis for production). |
+| `fuchsia:config/config` | Per-component | Configuration values from the workflow node definition |
+| `fuchsia:log/log` | Per-execution | Logging routed to OpenTelemetry with execution context |
 | `wasi:http/outgoing-handler` | Per-component | HTTP requests filtered by `allowed_hosts` from manifest. **Not yet implemented** - requires wasmtime-wasi-http integration. |
 
 ### Error Handling

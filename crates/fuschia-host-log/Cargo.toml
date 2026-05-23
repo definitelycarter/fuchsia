@@ -1,8 +1,0 @@
-[package]
-name = "fuschia-host-log"
-edition.workspace = true
-version.workspace = true
-description = "Logging host capability for fuschia task execution"
-
-[dependencies]
-tracing = "0.1"

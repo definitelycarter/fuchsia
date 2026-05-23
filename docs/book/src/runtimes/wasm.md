@@ -2,7 +2,7 @@
 
 The WebAssembly runtime executes tasks as WASI Preview 2 components via [wasmtime](https://wasmtime.dev/). It is the most mature runtime backend.
 
-**Crate**: `fuschia-task-runtime-wasm`
+**Crate**: `fuchsia-task-runtime-wasm`
 
 ## Why Wasmtime
 
@@ -33,9 +33,9 @@ let output = executor.execute(&wasm_bytes, capabilities, input).await?;
 
 1. **Compile or cache** — hash the bytes, check cache, compile `Component` if miss
 2. **Create fresh store** — `WasmTaskState::from_capabilities(&capabilities)` + `Store::new()`
-3. **Link imports** — WASI imports + fuschia host imports (kv, config, log)
+3. **Link imports** — WASI imports + fuchsia host imports (kv, config, log)
 4. **Instantiate** — `TaskComponent::instantiate_async()`
-5. **Call** — `instance.fuschia_task_task().call_execute()`
+5. **Call** — `instance.fuchsia_task_task().call_execute()`
 6. **Return** — parse JSON output into `TaskOutput`
 
 ## Host Capability Wiring
@@ -44,9 +44,9 @@ WIT imports map to shared host capability implementations via thin glue in `Wasm
 
 | WIT Import | Capability | Glue |
 |------------|-----------|------|
-| `fuschia:kv/kv` | `Arc<Mutex<dyn KvStore>>` | `futures::executor::block_on(kv.lock().await.get())` |
-| `fuschia:config/config` | `Arc<dyn ConfigHost>` | `self.config.get(&key)` |
-| `fuschia:log/log` | `Arc<dyn LogHost>` | `self.log.log(level, &message)` |
+| `fuchsia:kv/kv` | `Arc<Mutex<dyn KvStore>>` | `futures::executor::block_on(kv.lock().await.get())` |
+| `fuchsia:config/config` | `Arc<dyn ConfigHost>` | `self.config.get(&key)` |
+| `fuchsia:log/log` | `Arc<dyn LogHost>` | `self.log.log(level, &message)` |
 
 The `WasmTaskState` struct holds `Arc` clones of the shared capabilities. Each WIT host trait impl is a few lines that delegate to the corresponding capability.
 
@@ -59,7 +59,7 @@ Components implement the `task-component` world:
 ```wit
 world task-component {
     include platform;
-    export fuschia:task/task@0.1.0;
+    export fuchsia:task/task@0.1.0;
 }
 ```
 
@@ -67,9 +67,9 @@ world task-component {
 
 ```wit
 world platform {
-    import fuschia:kv/kv;
-    import fuschia:config/config;
-    import fuschia:log/log;
+    import fuchsia:kv/kv;
+    import fuchsia:config/config;
+    import fuchsia:log/log;
 }
 ```
 

@@ -1,6 +1,6 @@
 # Lua Runtime
 
-> **Status: Done** — `fuschia-task-runtime-lua`
+> **Status: Done** — `fuchsia-task-runtime-lua`
 
 The Lua runtime executes nodes as Lua scripts via [mlua](https://github.com/khvzak/mlua).
 

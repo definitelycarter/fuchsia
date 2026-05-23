@@ -1,0 +1,13 @@
+package fuchsia:kv@0.1.0;
+
+// TODO: Investigate supporting complex types (json values, number, bool, object)
+// instead of just string. Options:
+// - Use `list<u8>` for arbitrary bytes (component serializes/deserializes)
+// - Define a `value` variant with typed options
+// - Stick with string and let components JSON encode
+
+interface kv {
+  get: func(key: string) -> option<string>;
+  set: func(key: string, value: string);
+  delete: func(key: string);
+}

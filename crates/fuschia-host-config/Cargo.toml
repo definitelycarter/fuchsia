@@ -1,7 +1,0 @@
-[package]
-name = "fuschia-host-config"
-edition.workspace = true
-version.workspace = true
-description = "Configuration host capability for fuschia task execution"
-
-[dependencies]

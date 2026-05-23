@@ -1,0 +1,7 @@
+[package]
+name = "fuchsia-host-config"
+edition.workspace = true
+version.workspace = true
+description = "Configuration host capability for fuchsia task execution"
+
+[dependencies]

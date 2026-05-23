@@ -14,7 +14,7 @@ Unresolved design decisions and areas for future exploration.
 | Question | Context |
 |----------|---------|
 | HTTP outbound filtering | How to enforce `allowed_hosts` with `wasmtime-wasi-http`? Custom `WasiHttpView` wrapper or implement own handler? |
-| Shared Engine ownership | Should `fuschia-host` own the Engine singleton, or should the caller create and pass it in? |
+| Shared Engine ownership | Should `fuchsia-host` own the Engine singleton, or should the caller create and pass it in? |
 | KV store value types | Should `kv.wit` support complex types (json, number, bool, object) or just strings? |
 
 ## Execution
@@ -23,11 +23,11 @@ Unresolved design decisions and areas for future exploration.
 |----------|---------|
 | Loop item injection | How does `{ "item": {...}, "index": 0 }` get passed to nested workflow inputs? |
 | Join node output shape | What's the output — aggregated map of branch outputs? Pass-through? |
-| Distributed execution model | `fuschia start` daemon mode: init container pulls components at deploy time, pods wait for messages from broker. Each workflow node gets pre-warmed pods. |
+| Distributed execution model | `fuchsia start` daemon mode: init container pulls components at deploy time, pods wait for messages from broker. Each workflow node gets pre-warmed pods. |
 
 ## Naming
 
 | Question | Context |
 |----------|---------|
-| Fix spelling | Rename "Fuschia" → "Fuchsia" across codebase (crate names, directories, references) |
+| Fix spelling | Rename "Fuchsia" → "Fuchsia" across codebase (crate names, directories, references) |
 | WorkflowRunner naming | Current name may be confusing — reconsider |

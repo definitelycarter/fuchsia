@@ -1,0 +1,12 @@
+[package]
+name = "fuchsia-component-registry"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+fuchsia-config = { path = "../fuchsia-config" }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.0", features = ["fs"] }

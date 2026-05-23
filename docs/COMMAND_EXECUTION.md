@@ -48,7 +48,7 @@ capabilities:
 Each node execution gets an isolated work directory:
 
 ```
-/tmp/fuschia/executions/{execution_id}/{node_id}/
+/tmp/fuchsia/executions/{execution_id}/{node_id}/
 ```
 
 This directory is:
@@ -69,7 +69,7 @@ ffmpeg -i input.mp4 -o /etc/cron.d/malicious
 **Solution**: The sandbox profile only allows writes to the work directory. Any write outside fails at the OS level.
 
 ```scheme
-(allow file-write* (subpath "/tmp/fuschia/executions/{exec_id}/{node_id}"))
+(allow file-write* (subpath "/tmp/fuchsia/executions/{exec_id}/{node_id}"))
 ```
 
 Components are expected to use `work_dir()` for outputs. If they don't, the write fails.
@@ -92,7 +92,7 @@ ffmpeg -i ~/.ssh/id_rsa -f mp3 out.mp3
 ; ... etc
 
 ; Work directory only
-(allow file-read* (subpath "/tmp/fuschia/executions/{exec_id}/{node_id}"))
+(allow file-read* (subpath "/tmp/fuchsia/executions/{exec_id}/{node_id}"))
 ```
 
 Inputs must be explicitly staged into the work directory by the engine. The component cannot access arbitrary host paths.
@@ -120,8 +120,8 @@ Full working profile for macOS `sandbox-exec`:
 (allow file-read* (literal "/opt/homebrew/Cellar/ffmpeg/8.0.1_1/bin/ffmpeg"))
 
 ; Work directory - read and write
-(allow file-read* (subpath "/tmp/fuschia/executions/{exec_id}/{node_id}"))
-(allow file-write* (subpath "/tmp/fuschia/executions/{exec_id}/{node_id}"))
+(allow file-read* (subpath "/tmp/fuchsia/executions/{exec_id}/{node_id}"))
+(allow file-write* (subpath "/tmp/fuchsia/executions/{exec_id}/{node_id}"))
 
 ; Only allow executing the declared binary
 (allow process-exec (literal "/opt/homebrew/Cellar/ffmpeg/8.0.1_1/bin/ffmpeg"))
@@ -167,7 +167,7 @@ bwrap \
   --ro-bind /usr /usr \
   --ro-bind /lib /lib \
   --ro-bind /lib64 /lib64 \
-  --bind /tmp/fuschia/executions/{exec_id}/{node_id} /work \
+  --bind /tmp/fuchsia/executions/{exec_id}/{node_id} /work \
   --unshare-net \
   --die-with-parent \
   /usr/bin/ffmpeg -i /work/input.mp4 -o /work/output.mp4

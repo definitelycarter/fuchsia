@@ -66,7 +66,7 @@ If version is omitted, the latest installed version is returned.
 Components are stored in a predictable directory structure:
 
 ```
-~/.fuschia/components/
+~/.fuchsia/components/
 ├── my-org--google-sheets--1.0.0/
 │   ├── manifest.json
 │   ├── component.wasm

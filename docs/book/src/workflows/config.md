@@ -1,6 +1,6 @@
 # Configuration
 
-Workflows are defined as JSON files containing nodes, edges, and configuration. The `fuschia-config` crate provides the serializable types.
+Workflows are defined as JSON files containing nodes, edges, and configuration. The `fuchsia-config` crate provides the serializable types.
 
 ## WorkflowDef
 

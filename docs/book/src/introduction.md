@@ -1,6 +1,6 @@
-# Fuschia
+# Fuchsia
 
-Fuschia is a workflow engine similar to [n8n](https://n8n.io), built on a pluggable runtime architecture. Workflow nodes can be backed by WebAssembly components, Lua scripts, or (in the future) JavaScript — each running in a sandboxed VM with explicitly defined capabilities.
+Fuchsia is a workflow engine similar to [n8n](https://n8n.io), built on a pluggable runtime architecture. Workflow nodes can be backed by WebAssembly components, Lua scripts, or (in the future) JavaScript — each running in a sandboxed VM with explicitly defined capabilities.
 
 ## Goals
 
@@ -18,4 +18,4 @@ Fuschia is a workflow engine similar to [n8n](https://n8n.io), built on a plugga
 
 ## Project Status
 
-Fuschia is under active development. The core pipeline (config → resolution → execution) works end-to-end with wasmtime. The runtime abstraction layer (to support Lua and JS backends) is the next major milestone.
+Fuchsia is under active development. The core pipeline (config → resolution → execution) works end-to-end with wasmtime. The runtime abstraction layer (to support Lua and JS backends) is the next major milestone.

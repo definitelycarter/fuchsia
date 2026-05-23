@@ -1,4 +1,4 @@
-# Fuschia [![#FF00FF](https://img.shields.io/badge/%23FF00FF-FF00FF)](https://www.color-hex.com/color/ff00ff)
+# Fuchsia [![#FF00FF](https://img.shields.io/badge/%23FF00FF-FF00FF)](https://www.color-hex.com/color/ff00ff)
 
 A workflow engine built on WebAssembly components.
 

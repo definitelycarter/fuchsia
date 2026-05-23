@@ -1,6 +1,6 @@
-# Fuschia Use Cases
+# Fuchsia Use Cases
 
-This document provides concrete workflow examples to illustrate Fuschia's capabilities.
+This document provides concrete workflow examples to illustrate Fuchsia's capabilities.
 
 ## 1. Simple Linear Workflow
 

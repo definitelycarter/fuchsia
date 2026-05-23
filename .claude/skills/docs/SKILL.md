@@ -3,7 +3,7 @@ name: docs
 description: Use at the end of a feature or refactor before committing. Identifies which docs are affected by the change (mdBook pages, roadmap, README, AGENTS.md, per-crate READMEs), updates them in the same commit, and keeps the roadmap honest about what's done and what's planned.
 ---
 
-# Updating docs in fuschia
+# Updating docs in fuchsia
 
 The rule: **docs change in the same commit as the code that made them stale.** Doc drift compounds, and the commit log has precedent for this: `2ceed3f` ("Updated: AGENTS.md, DESIGN.md, TODO.md" bundled with the runtime restructure), `dfbacf4` (mdBook site added alongside the runtime unification), `38b2afd` (AGENTS.md updated with the WIT cleanup), `a166de8` (README + AGENTS bundled).
 
@@ -15,7 +15,7 @@ This skill is for end-of-feature doc updates. It is not for writing new standalo
 - `AGENTS.md` — coding guidelines, project structure, dev commands. **Frequently drifts** (currently lists removed pre-unification crates) — touch this whenever crate layout or workspace conventions change.
 - `docs/book/src/` — published mdBook. Canonical for architecture, runtimes, workflows, components, data model, examples, reference.
 - `docs/DESIGN.md`, `docs/USE_CASES.md`, `docs/ANALYSIS.md`, `docs/COMMAND_EXECUTION.md` — **legacy top-level docs that duplicate mdBook pages.** They predate the mdBook migration. Treat the mdBook as canonical; if you touch a topic that exists in both, update both in the same commit and consider flagging the duplication to the user so it can be resolved at the source.
-- `crates/<crate>/README.md` — per-crate readmes (currently `fuschia-component-registry`, `fuschia-resolver`).
+- `crates/<crate>/README.md` — per-crate readmes (currently `fuchsia-component-registry`, `fuchsia-resolver`).
 - `examples/README.md` — examples index.
 
 ## 1. Affected-doc map
@@ -32,8 +32,8 @@ Pick the docs to touch based on what the change altered. Widen when uncertain.
 | Runtime executor changes (wasm / lua / js)                             | `docs/book/src/runtimes/<wasm\|lua\|js>.md`, `docs/book/src/architecture/runtimes.md`                                                 |
 | Host capability changes (kv / config / log / http)                     | `docs/book/src/architecture/host-capabilities.md`, `docs/book/src/components/capabilities.md`                                          |
 | WIT interface changes (`wit/deps/<task\|trigger\|kv\|config\|log>`)    | `docs/book/src/components/<tasks\|triggers\|capabilities>.md`; the `.wit` files themselves are documentation — keep comments current  |
-| Component registry / manifest / packaging changes                      | `docs/book/src/architecture/component-registry.md`, `docs/book/src/components/packaging.md`, `crates/fuschia-component-registry/README.md` |
-| Workflow config schema or resolver changes                             | `docs/book/src/workflows/config.md`, `docs/book/src/workflows/resolution.md`, `crates/fuschia-resolver/README.md`                     |
+| Component registry / manifest / packaging changes                      | `docs/book/src/architecture/component-registry.md`, `docs/book/src/components/packaging.md`, `crates/fuchsia-component-registry/README.md` |
+| Workflow config schema or resolver changes                             | `docs/book/src/workflows/config.md`, `docs/book/src/workflows/resolution.md`, `crates/fuchsia-resolver/README.md`                     |
 | Trigger handling (poll / webhook / WASI incoming-request)              | `docs/book/src/workflows/triggers.md`, `docs/book/src/components/triggers.md`                                                         |
 | Input resolution (minijinja, type coercion)                            | `docs/book/src/workflows/input-resolution.md`                                                                                          |
 | Node data / error type changes                                         | `docs/book/src/data-model/<node-data\|errors>.md`                                                                                      |
@@ -72,7 +72,7 @@ When adding new planned work, match the existing table shape: `| Feature | Descr
 These two are the most likely to silently drift, because nothing forces them to update:
 
 - **`README.md`** quotes the feature list. Any user-visible capability added or removed needs to land here in the same commit.
-- **`AGENTS.md`** currently lists pre-runtime-unification crates that no longer exist (`fuschia-runtime`, `fuschia-engine`, `fuschia-host`, `fuschia-task-host`, `fuschia-trigger-host`, `fuschia-task`, `fuschia-trigger`). If you touch crate layout, fix the Project Structure section in the same commit — don't perpetuate the drift.
+- **`AGENTS.md`** currently lists pre-runtime-unification crates that no longer exist (`fuchsia-runtime`, `fuchsia-engine`, `fuchsia-host`, `fuchsia-task-host`, `fuchsia-trigger-host`, `fuchsia-task`, `fuchsia-trigger`). If you touch crate layout, fix the Project Structure section in the same commit — don't perpetuate the drift.
 
 ## 5. Commit-time integration
 

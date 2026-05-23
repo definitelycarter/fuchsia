@@ -71,6 +71,6 @@ The orchestrator calls `registry.execute(runtime_type, bytes, capabilities, inpu
 
 | Runtime | Crate | VM | Status |
 |---------|-------|----|--------|
-| [WebAssembly](../runtimes/wasm.md) | `fuschia-task-runtime-wasm` | wasmtime | Done |
-| [Lua](../runtimes/lua.md) | `fuschia-task-runtime-lua` | mlua | Done |
-| [JavaScript](../runtimes/js.md) | `fuschia-task-runtime-js` | TBD | Future |
+| [WebAssembly](../runtimes/wasm.md) | `fuchsia-task-runtime-wasm` | wasmtime | Done |
+| [Lua](../runtimes/lua.md) | `fuchsia-task-runtime-lua` | mlua | Done |
+| [JavaScript](../runtimes/js.md) | `fuchsia-task-runtime-js` | TBD | Future |
