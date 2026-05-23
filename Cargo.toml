@@ -12,7 +12,6 @@ package.edition = "2024"
 package.version = "0.0.1-alpha.0"
 exclude = [
   "test-components/test-task-component",
-  "test-components/test-trigger-component",
 ]
 members = [
   "crates/fuschia-artifact",

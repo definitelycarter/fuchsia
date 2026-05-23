@@ -6,9 +6,7 @@ use async_trait::async_trait;
 
 use fuschia_component_registry::{ComponentRegistry, InstalledComponent};
 use fuschia_config::{NodeDef, NodeType as ConfigNodeType, WorkflowDef};
-use fuschia_workflow::{
-  LockedComponent, LockedLoop, LockedTrigger, Node, NodeType, Workflow,
-};
+use fuschia_workflow::{LockedComponent, LockedLoop, Node, NodeType, Workflow};
 
 use crate::error::ResolveError;
 
@@ -118,43 +116,6 @@ impl<R: ComponentRegistry> StandardResolver<R> {
     Box::pin(async move {
       let node_type =
         match node_def.node_type {
-          ConfigNodeType::Trigger {
-            trigger_type,
-            trigger_component,
-          } => {
-            let locked_component = match trigger_component {
-              Some(tc) => {
-                let installed = self
-                  .lookup_component(&tc.component.name, tc.component.version.as_deref())
-                  .await?;
-
-                // Look up the trigger in the manifest to get its schema
-                let trigger_export = installed
-                  .manifest
-                  .triggers
-                  .get(&tc.trigger_name)
-                  .ok_or_else(|| ResolveError::TriggerNotFound {
-                    component: installed.manifest.name.clone(),
-                    trigger_name: tc.trigger_name.clone(),
-                  })?;
-
-                Some(LockedComponent {
-                  name: installed.manifest.name,
-                  version: installed.manifest.version,
-                  digest: installed.manifest.digest,
-                  task_name: tc.trigger_name,
-                  input_schema: trigger_export.schema.clone(),
-                  runtime_type: Default::default(),
-                })
-              }
-              None => None,
-            };
-
-            NodeType::Trigger(LockedTrigger {
-              trigger_type,
-              component: locked_component,
-            })
-          }
           ConfigNodeType::Component {
             component,
             task_name,
@@ -373,7 +334,6 @@ mod tests {
         digest: digest.to_string(),
         capabilities: Default::default(),
         tasks,
-        triggers: HashMap::new(),
       };
       let installed = InstalledComponent {
         manifest,

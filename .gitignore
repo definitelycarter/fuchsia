@@ -1,3 +1,4 @@
 /target
 test-components/*/target
 .DS_Store
+docs/book/book/

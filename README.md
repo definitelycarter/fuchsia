@@ -7,10 +7,10 @@ A workflow engine built on WebAssembly components.
 - **Multi-runtime** — Write components in WebAssembly or Lua. Same execution model, same host capabilities, your choice of language.
 - **Sandboxed execution** — Components run in isolated VMs with no access to the host filesystem, network, or environment unless explicitly granted through capability policies.
 - **Parallel scheduling** — Independent branches execute concurrently as tokio tasks. Parallelism emerges from graph structure automatically.
-- **Unified trigger model** — Triggers and tasks share the same `execute(ctx, data)` interface and run through the same runtime registry. Triggers can validate, enrich, or reject incoming payloads.
+- **Manual invocation** — Workflows are invoked with a JSON payload that is fed to graph entry points. No background pollers or webhook listeners.
 - **Host capabilities** — Components access KV storage, configuration, logging, and HTTP through a shared capability layer. No capability logic is duplicated across runtimes.
 - **Input templating** — Node inputs use Jinja2-style templates (`{{ upstream.field | upper }}`) with type coercion from schemas.
-- **Component registry** — Install, version, and resolve components from a local registry. Components declare their capabilities, exported tasks, and triggers in a manifest.
+- **Component registry** — Install, version, and resolve components from a local registry. Components declare their capabilities and exported tasks in a manifest.
 - **Cancellation** — Workflow-level cancellation propagates to all running nodes via `CancellationToken`.
 
 ## Quick Start
@@ -21,10 +21,10 @@ A workflow engine built on WebAssembly components.
 echo '{"message": "hello world"}' | cargo run -- run workflow examples/simple-workflow.json --data-dir examples
 ```
 
-### Run a single task
+### Run a single node
 
 ```bash
-echo '{"message": "test"}' | cargo run -- run task examples/simple-workflow.json --node process --data-dir examples
+echo '{"message": "test"}' | cargo run -- run node examples/simple-workflow.json --node process --data-dir examples
 ```
 
 ### CLI Help

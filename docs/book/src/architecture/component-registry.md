@@ -39,27 +39,11 @@ Each installed component has a manifest describing its exports and capabilities:
         }
       }
     }
-  },
-  "triggers": {
-    "row-added": {
-      "description": "Fires when a new row is added",
-      "schema": {
-        "type": "object",
-        "required": ["spreadsheet_id"],
-        "properties": {
-          "spreadsheet_id": { "type": "string" }
-        }
-      },
-      "trigger_type": {
-        "type": "poll",
-        "interval_ms": 30000
-      }
-    }
   }
 }
 ```
 
-Components can export multiple tasks and triggers. A single component (e.g., "google-sheets") can provide both `write-row` task and `row-added` trigger.
+Components can export multiple tasks. A single component (e.g., "google-sheets") can provide both `write-row` and `read-range` tasks.
 
 ## Registry Trait
 
@@ -119,7 +103,7 @@ The `input_schema` in the manifest uses JSON Schema. This enables:
 When a workflow is resolved (config → locked workflow):
 
 1. Look up each component reference in the registry
-2. Validate the component exists and the requested task/trigger export exists
+2. Validate the component exists and the requested task export exists
 3. Copy the input schema from the manifest into the locked workflow
 4. Lock with concrete name, version, and digest
 

@@ -6,7 +6,6 @@ Unresolved design decisions and areas for future exploration.
 
 | Question | Context |
 |----------|---------|
-| Trigger trait | Same `NodeExecutor` trait for both tasks and triggers, or separate traits? Currently they have different interfaces (task: `execute(ctx, data) → output`, trigger: `handle(event) → status`). |
 | Byte source | Should executors receive bytes directly, or a path + option for bytes? Path is useful for wasmtime's `Component::from_file` optimization. Bytes-from-memory is useful for tests. |
 | Runtime field in manifest | Should component manifests gain a `runtime: "wasm" | "lua"` field for dispatch? |
 

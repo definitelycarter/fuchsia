@@ -52,7 +52,7 @@ The `WasmTaskState` struct holds `Arc` clones of the shared capabilities. Each W
 
 ## WIT Worlds
 
-Components implement one of two worlds:
+Components implement the `task-component` world:
 
 ### task-component
 
@@ -60,15 +60,6 @@ Components implement one of two worlds:
 world task-component {
     include platform;
     export fuschia:task/task@0.1.0;
-}
-```
-
-### trigger-component
-
-```wit
-world trigger-component {
-    include platform;
-    export fuschia:trigger/trigger@0.1.0;
 }
 ```
 

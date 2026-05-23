@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fuschia_component_registry::InMemoryComponentRegistry;
-use fuschia_config::{RuntimeType as ConfigRuntimeType, TriggerType};
+use fuschia_config::RuntimeType as ConfigRuntimeType;
 use fuschia_task_runtime::{RuntimeRegistry, RuntimeType};
 use fuschia_task_runtime_lua::LuaExecutor;
-use fuschia_workflow::{LockedComponent, LockedTrigger, Node, NodeType, Workflow};
+use fuschia_workflow::{LockedComponent, Node, NodeType, Workflow};
 use fuschia_workflow_orchestrator::{Orchestrator, OrchestratorConfig};
 use tokio_util::sync::CancellationToken;
 
@@ -40,64 +40,9 @@ function execute(ctx, data)
 end
 "#;
 
-/// Trigger component that returns completed status with enriched data.
-const TRIGGER_COMPLETED_LUA: &str = r#"
-function execute(ctx, data)
-    return '{"status": "completed", "enriched": true}'
-end
-"#;
-
-/// Trigger component that returns pending status (short-circuit).
-const TRIGGER_PENDING_LUA: &str = r#"
-function execute(ctx, data)
-    return '{"status": "pending"}'
-end
-"#;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn manual_trigger(node_id: &str) -> (String, Node) {
-    (
-        node_id.to_string(),
-        Node {
-            node_id: node_id.to_string(),
-            node_type: NodeType::Trigger(LockedTrigger {
-                trigger_type: TriggerType::Manual,
-                component: None,
-            }),
-            inputs: HashMap::new(),
-            timeout_ms: None,
-            max_retry_attempts: None,
-            fail_workflow: false,
-        },
-    )
-}
-
-fn lua_trigger(node_id: &str, component_name: &str) -> (String, Node) {
-    (
-        node_id.to_string(),
-        Node {
-            node_id: node_id.to_string(),
-            node_type: NodeType::Trigger(LockedTrigger {
-                trigger_type: TriggerType::Manual,
-                component: Some(LockedComponent {
-                    name: component_name.to_string(),
-                    version: "1.0.0".to_string(),
-                    digest: "sha256:test".to_string(),
-                    task_name: "execute".to_string(),
-                    input_schema: serde_json::json!({}),
-                    runtime_type: ConfigRuntimeType::Lua,
-                }),
-            }),
-            inputs: HashMap::new(),
-            timeout_ms: None,
-            max_retry_attempts: None,
-            fail_workflow: false,
-        },
-    )
-}
 
 fn lua_task_node(node_id: &str, component_name: &str) -> (String, Node) {
     (
@@ -203,18 +148,15 @@ fn make_orchestrator(
 // Tests
 // ---------------------------------------------------------------------------
 
-/// trigger → echo → verify output matches trigger payload.
+/// echo entry node → verify output matches payload.
 #[tokio::test]
 async fn test_single_node_success() {
     let mut inputs = HashMap::new();
     inputs.insert("msg".to_string(), "{{ msg }}".to_string());
 
     let workflow = make_workflow(
-        vec![
-            manual_trigger("trigger"),
-            lua_task_node_with_inputs("A", "echo", inputs),
-        ],
-        vec![("trigger", "A")],
+        vec![lua_task_node_with_inputs("A", "echo", inputs)],
+        vec![],
     );
 
     let orch = make_orchestrator(workflow, vec![("echo", ECHO_LUA.as_bytes())]);
@@ -228,7 +170,7 @@ async fn test_single_node_success() {
     assert_eq!(a_output["msg"], "hello");
 }
 
-/// trigger → A → B → C (linear chain), verify data flows through.
+/// A → B → C (linear chain), verify data flows through.
 #[tokio::test]
 async fn test_linear_chain() {
     let mut a_inputs = HashMap::new();
@@ -242,12 +184,11 @@ async fn test_linear_chain() {
 
     let workflow = make_workflow(
         vec![
-            manual_trigger("trigger"),
             lua_task_node_with_inputs("A", "echo", a_inputs),
             lua_task_node_with_inputs("B", "transform", b_inputs),
             lua_task_node_with_inputs("C", "echo", c_inputs),
         ],
-        vec![("trigger", "A"), ("A", "B"), ("B", "C")],
+        vec![("A", "B"), ("B", "C")],
     );
 
     let orch = make_orchestrator(
@@ -272,7 +213,7 @@ async fn test_linear_chain() {
     assert_eq!(c_output["transformed"], "true");
 }
 
-/// trigger → [A, B] in parallel, verify both run.
+/// [A, B] in parallel (both entry points), verify both run.
 #[tokio::test]
 async fn test_parallel_fan_out() {
     let mut a_inputs = HashMap::new();
@@ -283,11 +224,10 @@ async fn test_parallel_fan_out() {
 
     let workflow = make_workflow(
         vec![
-            manual_trigger("trigger"),
             lua_task_node_with_inputs("A", "echo", a_inputs),
             lua_task_node_with_inputs("B", "echo", b_inputs),
         ],
-        vec![("trigger", "A"), ("trigger", "B")],
+        vec![],
     );
 
     let orch = make_orchestrator(workflow, vec![("echo", ECHO_LUA.as_bytes())]);
@@ -303,20 +243,17 @@ async fn test_parallel_fan_out() {
     assert_eq!(result.node_results["B"].output["fan"], "out");
 }
 
-/// trigger → [A, B] → join → C, verify join merges and C receives it.
+/// [A, B] → join → C, verify join merges and C receives it.
 #[tokio::test]
 async fn test_fan_out_join() {
     let workflow = make_workflow(
         vec![
-            manual_trigger("trigger"),
             lua_task_node("A", "echo"),
             lua_task_node("B", "echo"),
             join_node("join"),
             lua_task_node("C", "echo"),
         ],
         vec![
-            ("trigger", "A"),
-            ("trigger", "B"),
             ("A", "join"),
             ("B", "join"),
             ("join", "C"),
@@ -336,16 +273,15 @@ async fn test_fan_out_join() {
     assert!(result.node_results.contains_key("C"));
 }
 
-/// trigger → A (fails) → B, verify B never runs and workflow errors.
+/// A (fails) → B, verify B never runs and workflow errors.
 #[tokio::test]
 async fn test_task_failure_stops_workflow() {
     let workflow = make_workflow(
         vec![
-            manual_trigger("trigger"),
             lua_task_node("A", "fail"),
             lua_task_node("B", "echo"),
         ],
-        vec![("trigger", "A"), ("A", "B")],
+        vec![("A", "B")],
     );
 
     let orch = make_orchestrator(
@@ -369,17 +305,16 @@ async fn test_task_failure_stops_workflow() {
     );
 }
 
-/// trigger → [A (ok), B (fails)] → C, verify workflow fails.
+/// [A (ok), B (fails)] → C, verify workflow fails.
 #[tokio::test]
 async fn test_failure_in_parallel_batch() {
     let workflow = make_workflow(
         vec![
-            manual_trigger("trigger"),
             lua_task_node("A", "echo"),
             lua_task_node("B", "fail"),
             lua_task_node("C", "echo"),
         ],
-        vec![("trigger", "A"), ("trigger", "B"), ("A", "C"), ("B", "C")],
+        vec![("A", "C"), ("B", "C")],
     );
 
     let orch = make_orchestrator(
@@ -397,10 +332,10 @@ async fn test_failure_in_parallel_batch() {
     assert!(result.is_err(), "workflow should have failed due to B");
 }
 
-/// trigger → A → B (with template input), verify template resolves.
+/// A → B (with template input), verify template resolves.
 #[tokio::test]
 async fn test_input_template_resolution() {
-    // A needs inputs to forward the trigger payload
+    // A (entry point) forwards the payload's `msg` field
     let mut a_inputs = HashMap::new();
     a_inputs.insert("msg".to_string(), "{{ msg }}".to_string());
 
@@ -410,11 +345,10 @@ async fn test_input_template_resolution() {
 
     let workflow = make_workflow(
         vec![
-            manual_trigger("trigger"),
             lua_task_node_with_inputs("A", "echo", a_inputs),
             lua_task_node_with_inputs("B", "echo", b_inputs),
         ],
-        vec![("trigger", "A"), ("A", "B")],
+        vec![("A", "B")],
     );
 
     let orch = make_orchestrator(workflow, vec![("echo", ECHO_LUA.as_bytes())]);
@@ -432,15 +366,15 @@ async fn test_input_template_resolution() {
     assert_eq!(b_resolved["greeting"], "hello world");
 }
 
-/// trigger → A (cancel mid-execution), verify Cancelled error.
+/// A (pre-cancelled), verify Cancelled error.
 #[tokio::test]
 async fn test_cancellation() {
     // Use a script with a busy loop that can be interrupted by the cancel check.
     // Note: Lua execution is synchronous, so cancellation is checked between waves.
     // We test that the cancel token is checked before execution starts.
     let workflow = make_workflow(
-        vec![manual_trigger("trigger"), lua_task_node("A", "echo")],
-        vec![("trigger", "A")],
+        vec![lua_task_node("A", "echo")],
+        vec![],
     );
 
     let orch = make_orchestrator(workflow, vec![("echo", ECHO_LUA.as_bytes())]);
@@ -459,12 +393,12 @@ async fn test_cancellation() {
     );
 }
 
-/// trigger → A with empty payload, verify it still works.
+/// A with empty payload, verify it still works.
 #[tokio::test]
 async fn test_empty_input() {
     let workflow = make_workflow(
-        vec![manual_trigger("trigger"), lua_task_node("A", "echo")],
-        vec![("trigger", "A")],
+        vec![lua_task_node("A", "echo")],
+        vec![],
     );
 
     let orch = make_orchestrator(workflow, vec![("echo", ECHO_LUA.as_bytes())]);
@@ -477,27 +411,17 @@ async fn test_empty_input() {
     assert!(result.node_results.contains_key("A"));
 }
 
-/// trigger → [10 parallel tasks] → join, verify all run and merge.
+/// [10 parallel entry tasks] → join, verify all run and merge.
 #[tokio::test]
 async fn test_large_fan_out() {
-    let mut nodes = vec![manual_trigger("trigger")];
-
-    // Create 10 parallel echo tasks
     let task_ids: Vec<String> = (0..10).map(|i| format!("task_{i}")).collect();
-    for id in &task_ids {
-        nodes.push(lua_task_node(id, "echo"));
-    }
+    let mut nodes: Vec<(String, Node)> =
+        task_ids.iter().map(|id| lua_task_node(id, "echo")).collect();
     nodes.push(join_node("join"));
 
-    // Build edges with owned strings to avoid lifetime issues
     let edge_pairs: Vec<(String, String)> = task_ids
         .iter()
-        .flat_map(|id| {
-            vec![
-                ("trigger".to_string(), id.clone()),
-                (id.clone(), "join".to_string()),
-            ]
-        })
+        .map(|id| (id.clone(), "join".to_string()))
         .collect();
 
     let workflow = Workflow {
@@ -528,8 +452,8 @@ async fn test_large_fan_out() {
         .await
         .expect("invoke failed");
 
-    // All 10 tasks + trigger + join = 12 nodes
-    assert_eq!(result.node_results.len(), 12);
+    // All 10 tasks + join = 11 nodes
+    assert_eq!(result.node_results.len(), 11);
     for id in &task_ids {
         assert!(
             result.node_results.contains_key(id),
@@ -537,71 +461,4 @@ async fn test_large_fan_out() {
         );
     }
     assert!(result.node_results.contains_key("join"));
-}
-
-/// Lua trigger component that returns completed → workflow continues.
-#[tokio::test]
-async fn test_trigger_component_completed() {
-    let mut inputs = HashMap::new();
-    inputs.insert("enriched".to_string(), "{{ enriched }}".to_string());
-
-    let workflow = make_workflow(
-        vec![
-            lua_trigger("trigger", "trigger-comp"),
-            lua_task_node_with_inputs("A", "echo", inputs),
-        ],
-        vec![("trigger", "A")],
-    );
-
-    let orch = make_orchestrator(
-        workflow,
-        vec![
-            ("trigger-comp", TRIGGER_COMPLETED_LUA.as_bytes()),
-            ("echo", ECHO_LUA.as_bytes()),
-        ],
-    );
-
-    let result = orch
-        .invoke(serde_json::json!({}), CancellationToken::new())
-        .await
-        .expect("invoke failed");
-
-    // Trigger component output has status=completed and enriched=true
-    let trigger_output = &result.node_results["trigger"].output;
-    assert_eq!(trigger_output["status"], "completed");
-    assert_eq!(trigger_output["enriched"], true);
-
-    // A should have run and received enriched=true from trigger output
-    assert!(result.node_results.contains_key("A"));
-    assert_eq!(result.node_results["A"].output["enriched"], "true");
-}
-
-/// Lua trigger component that returns pending → short-circuit, no downstream.
-#[tokio::test]
-async fn test_trigger_component_pending_short_circuits() {
-    let workflow = make_workflow(
-        vec![
-            lua_trigger("trigger", "trigger-pending"),
-            lua_task_node("A", "echo"),
-        ],
-        vec![("trigger", "A")],
-    );
-
-    let orch = make_orchestrator(
-        workflow,
-        vec![
-            ("trigger-pending", TRIGGER_PENDING_LUA.as_bytes()),
-            ("echo", ECHO_LUA.as_bytes()),
-        ],
-    );
-
-    let result = orch
-        .invoke(serde_json::json!({}), CancellationToken::new())
-        .await
-        .expect("invoke should succeed (short-circuit is not an error)");
-
-    // Only the trigger node should have run
-    assert_eq!(result.node_results.len(), 1);
-    assert!(result.node_results.contains_key("trigger"));
-    assert_eq!(result.node_results["trigger"].output["status"], "pending");
 }

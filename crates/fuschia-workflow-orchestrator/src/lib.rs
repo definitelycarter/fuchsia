@@ -1,9 +1,10 @@
 //! Fuschia Workflow Orchestrator
 //!
 //! This crate handles workflow execution: DAG traversal, wave-based scheduling,
-//! input resolution, and component execution dispatch. It delegates all execution
-//! (tasks and triggers) to the `RuntimeRegistry` from `fuschia-task-runtime`,
-//! making the orchestrator fully runtime-agnostic.
+//! input resolution, and component execution dispatch. It delegates all task
+//! execution to the `RuntimeRegistry` from `fuschia-task-runtime`, making the
+//! orchestrator fully runtime-agnostic. Workflows are invoked manually with a
+//! payload that is fed to graph entry points.
 
 mod capabilities;
 mod error;

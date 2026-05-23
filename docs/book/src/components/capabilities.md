@@ -27,7 +27,7 @@ interface kv {
 }
 ```
 
-Use cases: tracking state in polling triggers, caching intermediate results.
+Use cases: caching intermediate results, sharing state between nodes within an execution.
 
 ### Configuration
 

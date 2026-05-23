@@ -2,7 +2,7 @@
 
 > **Status: Done** — `fuschia-task-runtime-lua`
 
-The Lua runtime executes nodes as Lua scripts via [mlua](https://github.com/khvzak/mlua). Both tasks and triggers can be written in Lua.
+The Lua runtime executes nodes as Lua scripts via [mlua](https://github.com/khvzak/mlua).
 
 ## Why Lua
 
@@ -63,29 +63,6 @@ end
 ```
 
 Each function is a thin Rust closure that calls the shared host capability implementation. No capability logic is duplicated.
-
-## Trigger Components in Lua
-
-Trigger components use the same `execute(ctx, data)` interface. To control workflow flow, return a JSON object with a `status` field:
-
-```lua
--- Trigger that validates and enriches incoming data
-function execute(ctx, data)
-    local input = json_decode(data)
-
-    if not input.api_key then
-        -- Reject: return pending to short-circuit the workflow
-        return '{"status": "pending"}'
-    end
-
-    -- Accept: return completed with enriched data
-    return json_encode({
-        status = "completed",
-        validated = true,
-        payload = input
-    })
-end
-```
 
 ## Architecture
 

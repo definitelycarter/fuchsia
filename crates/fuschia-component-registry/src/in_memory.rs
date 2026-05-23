@@ -51,7 +51,6 @@ impl InMemoryComponentRegistry {
             digest: format!("sha256:{:x}", fxhash(name, version)),
             capabilities: Default::default(),
             tasks: HashMap::new(),
-            triggers: HashMap::new(),
         };
 
         // Write bytes to disk so resolve_component_bytes can read them.

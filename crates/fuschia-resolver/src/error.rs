@@ -34,13 +34,6 @@ pub enum ResolveError {
     task_name: String,
   },
 
-  /// Trigger not found in component manifest.
-  #[error("trigger '{trigger_name}' not found in component '{component}'")]
-  TriggerNotFound {
-    component: String,
-    trigger_name: String,
-  },
-
   /// Registry error while looking up component.
   #[error("registry error: {0}")]
   Registry(#[from] fuschia_component_registry::RegistryError),

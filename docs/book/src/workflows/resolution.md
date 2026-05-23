@@ -5,7 +5,7 @@ Resolution transforms a `WorkflowDef` (config) into a `Workflow` (locked). This 
 ## What Resolution Does
 
 1. **Validates the graph** — checks for duplicate node IDs, invalid edges, and cycles (via DFS with coloring)
-2. **Resolves component references** — looks up each component in the registry, verifies the requested task/trigger export exists
+2. **Resolves component references** — looks up each component in the registry, verifies the requested task export exists
 3. **Locks versions and digests** — captures the concrete name, version, and SHA-256 digest of each component
 4. **Copies schemas** — extracts JSON Schema from the component manifest and embeds it in the locked workflow
 5. **Resolves nested workflows** — recursively resolves Loop node sub-workflows
@@ -48,7 +48,6 @@ pub enum ResolveError {
     ComponentNotFound { name: String },
     ComponentVersionNotFound { name: String, version: String },
     TaskNotFound { component: String, task_name: String },
-    TriggerNotFound { component: String, trigger_name: String },
     InvalidEdge { node_id: String },
     DuplicateNodeId { node_id: String },
     NoEntryPoints,

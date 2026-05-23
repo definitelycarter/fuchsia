@@ -26,6 +26,14 @@ The context available to templates depends on the node's position in the graph:
 // Template: "{{ name | upper }}" → "JOHN"
 ```
 
+**Entry-point nodes (no incoming edges)**: The invocation payload acts as the single virtual upstream. Fields of the payload are accessed directly.
+
+```json
+// Invocation payload: { "msg": "hello", "count": 3 }
+// Template: "{{ msg }}" → "hello"
+// Template: "{{ count }}" → "3"
+```
+
 **Join nodes (multiple upstream)**: Context is keyed by upstream node IDs.
 
 ```json
@@ -35,9 +43,8 @@ The context available to templates depends on the node's position in the graph:
 
 ### Data Visibility
 
-**Strict single-hop visibility**: each node only sees its immediate upstream node's `data` output.
+**Strict single-hop visibility**: each node only sees its immediate upstream node's `data` output (or the invocation payload, for entry-point nodes).
 
-- No implicit access to trigger payload from non-entry nodes
 - No cross-branch data sharing without explicit join
 - Future: `context` escape hatch for explicit cross-node data sharing
 

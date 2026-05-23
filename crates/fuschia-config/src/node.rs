@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::component::ComponentRef;
 use crate::edge::Edge;
-use crate::enums::{ExecutionMode, JoinStrategy, LoopFailureMode, TriggerType};
+use crate::enums::{ExecutionMode, JoinStrategy, LoopFailureMode};
 use crate::input::InputValue;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,28 +22,9 @@ pub struct NodeDef {
   pub fail_workflow: Option<bool>,
 }
 
-/// A trigger component reference with its export name.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriggerComponentRef {
-  /// Component reference
-  #[serde(flatten)]
-  pub component: ComponentRef,
-  /// Name of the trigger export within the component (e.g., "row-added")
-  pub trigger_name: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NodeType {
-  /// A trigger node that initiates workflow execution.
-  Trigger {
-    /// The type of trigger (manual, poll, webhook)
-    #[serde(flatten)]
-    trigger_type: TriggerType,
-    /// Optional component for custom trigger processing
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    trigger_component: Option<TriggerComponentRef>,
-  },
   #[serde(rename = "component")]
   Component {
     #[serde(flatten)]

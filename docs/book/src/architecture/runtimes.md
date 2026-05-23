@@ -21,7 +21,6 @@ pub trait NodeExecutor: Send + Sync {
 - **Output**: structured JSON output
 - **Lifecycle**: the executor owns its caching strategy internally. Wasmtime compiles once and caches `Component`. Lua reads source each time (or caches bytecode). The caller never sees these details.
 - **Isolation**: VM instances (wasm memory, lua state) are created fresh per invocation. No state leakage between calls.
-- **Unified execution**: Both tasks and triggers execute through this same trait. The orchestrator interprets the output (e.g., checking `status` field for triggers).
 
 ## Capabilities
 

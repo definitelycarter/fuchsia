@@ -69,24 +69,6 @@ Executes a task exported by a wasm component (or Lua/JS script):
 }
 ```
 
-### Trigger
-
-Initiates the workflow. Every workflow must have exactly one trigger:
-
-```json
-{
-  "node_id": "start",
-  "type": "trigger",
-  "trigger_type": { "type": "webhook", "method": "POST" },
-  "trigger_component": {
-    "component": "my-org/google-sheets",
-    "trigger_name": "row-added"
-  }
-}
-```
-
-Trigger types: `manual`, `poll` (with `interval_ms`), `webhook` (with `method`).
-
 ### Join
 
 Synchronizes parallel branches:
@@ -129,6 +111,22 @@ Connections between nodes:
   ]
 }
 ```
+
+## Entry Points
+
+Workflows form arbitrary DAGs. Any node with no incoming edges is an **entry point**. When the orchestrator is invoked with a JSON payload, the payload is delivered to every entry point as if it had come from a single virtual upstream node. Templates on entry-point nodes reference payload fields directly:
+
+```json
+{
+  "node_id": "process",
+  "type": "component",
+  "component": "my-org/printer",
+  "task_name": "print",
+  "inputs": { "message": "{{ msg }}" }
+}
+```
+
+Invoking with `{ "msg": "hello" }` would render `message` as `"hello"`.
 
 ## Input Values
 

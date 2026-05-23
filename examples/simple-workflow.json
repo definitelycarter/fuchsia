@@ -3,11 +3,6 @@
   "name": "Simple Test Workflow",
   "nodes": [
     {
-      "node_id": "trigger",
-      "type": "trigger",
-      "trigger_type": "manual"
-    },
-    {
       "node_id": "process",
       "type": "component",
       "name": "test-task",
@@ -18,7 +13,5 @@
       }
     }
   ],
-  "edges": [
-    ["trigger", "process"]
-  ]
+  "edges": []
 }

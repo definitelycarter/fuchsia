@@ -1,8 +1,9 @@
 //! Workflow orchestrator.
 //!
 //! The [`Orchestrator`] handles DAG traversal, wave-based scheduling,
-//! input resolution, and delegates all component execution (tasks and
-//! triggers) to the [`RuntimeRegistry`].
+//! input resolution, and delegates all component execution to the
+//! [`RuntimeRegistry`]. Workflows are invoked manually with a payload
+//! that is fed to graph entry points.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,14 +22,6 @@ use crate::result::{InvokeResult, NodeResult};
 
 /// Handle for a spawned node task.
 type NodeHandle = tokio::task::JoinHandle<Result<NodeResult, OrchestratorError>>;
-
-/// Result of trigger execution.
-enum TriggerOutcome {
-    /// Trigger completed — proceed with graph execution.
-    Continue(NodeResult),
-    /// Trigger returned Pending — short-circuit, don't run the graph.
-    ShortCircuit(NodeResult),
-}
 
 /// Configuration for the orchestrator.
 #[derive(Default)]
@@ -64,7 +57,10 @@ impl Orchestrator {
         })
     }
 
-    /// Execute the workflow with the given trigger payload.
+    /// Execute the workflow with the given payload.
+    ///
+    /// The payload is fed to graph entry points (nodes with no incoming edges)
+    /// as if it were the output of a single upstream node.
     #[instrument(
         name = "orchestrator_invoke",
         skip(self, payload, cancel),
@@ -80,38 +76,19 @@ impl Orchestrator {
         info!(
             execution_id = %execution_id,
             workflow_id = %self.workflow.workflow_id,
-            trigger_payload = %payload,
+            payload = %payload,
             "workflow_started"
         );
 
-        // Validate the workflow graph
         self.validate_workflow()?;
 
-        // Create a capabilities factory for this execution (shared KV)
         let capabilities_factory = CapabilitiesFactory::new();
+        let mut completed: HashMap<String, NodeResult> = HashMap::new();
 
-        // Execute the trigger
-        let trigger_result = self
-            .execute_trigger(payload, &execution_id, &cancel, &capabilities_factory)
-            .await?;
-
-        let mut completed = match trigger_result {
-            TriggerOutcome::Continue(node_result) => {
-                HashMap::from([(node_result.node_id.clone(), node_result)])
-            }
-            TriggerOutcome::ShortCircuit(node_result) => {
-                info!(execution_id = %execution_id, "workflow_completed (trigger short-circuit)");
-                return Ok(InvokeResult {
-                    execution_id,
-                    node_results: HashMap::from([(node_result.node_id.clone(), node_result)]),
-                });
-            }
-        };
-
-        // Execute nodes until no more are ready
         let result = self
             .run_execution_loop(
                 &mut completed,
+                &payload,
                 &execution_id,
                 &cancel,
                 &capabilities_factory,
@@ -213,52 +190,6 @@ impl Orchestrator {
                     output: output.data,
                 })
             }
-            NodeType::Trigger(locked_trigger) => {
-                match &locked_trigger.component {
-                    Some(component) => {
-                        let bytes = self
-                            .resolve_component_bytes(&component.name, &component.version)
-                            .await?;
-
-                        let capabilities =
-                            capabilities_factory.build_default(&execution_id, node_id);
-
-                        if cancel.is_cancelled() {
-                            return Err(OrchestratorError::Cancelled);
-                        }
-
-                        let rt = map_runtime_type(&component.runtime_type);
-                        let output = self
-                            .registry
-                            .execute(
-                                rt,
-                                &bytes,
-                                capabilities,
-                                RuntimeTaskInput { data: payload.clone() },
-                            )
-                            .await
-                            .map_err(|e| OrchestratorError::TaskExecution { source: e })?;
-
-                        Ok(NodeResult {
-                            task_id,
-                            node_id: node_id.to_string(),
-                            input: payload,
-                            resolved_input: serde_json::Value::Null,
-                            output: output.data,
-                        })
-                    }
-                    None => {
-                        // No component — pass through the payload
-                        Ok(NodeResult {
-                            task_id,
-                            node_id: node_id.to_string(),
-                            input: serde_json::Value::Null,
-                            resolved_input: serde_json::Value::Null,
-                            output: payload,
-                        })
-                    }
-                }
-            }
             NodeType::Join { .. } => Err(OrchestratorError::InvalidGraph {
                 message: format!(
                     "cannot invoke_node on join node '{}' — joins are graph-level concerns",
@@ -323,6 +254,7 @@ impl Orchestrator {
     async fn run_execution_loop(
         &self,
         completed: &mut HashMap<String, NodeResult>,
+        payload: &serde_json::Value,
         execution_id: &str,
         cancel: &CancellationToken,
         capabilities_factory: &CapabilitiesFactory,
@@ -360,6 +292,7 @@ impl Orchestrator {
             let handles = self.execute_ready_nodes(
                 &ready,
                 completed,
+                payload,
                 execution_id,
                 cancel,
                 capabilities_factory,
@@ -403,101 +336,6 @@ impl Orchestrator {
         })
     }
 
-    /// Execute the trigger node.
-    ///
-    /// Trigger components are executed via the RuntimeRegistry, just like tasks.
-    /// The orchestrator checks the output for a `"status": "pending"` field to
-    /// decide whether to short-circuit (skip graph execution) or continue.
-    async fn execute_trigger(
-        &self,
-        payload: serde_json::Value,
-        execution_id: &str,
-        cancel: &CancellationToken,
-        capabilities_factory: &CapabilitiesFactory,
-    ) -> Result<TriggerOutcome, OrchestratorError> {
-        // validate_workflow already enforces exactly one trigger
-        let trigger_id = self.find_trigger_nodes().into_iter().next().unwrap();
-        let node = self.workflow.get_node(&trigger_id).unwrap().clone();
-        let locked_trigger = match &node.node_type {
-            NodeType::Trigger(lt) => lt.clone(),
-            _ => unreachable!(),
-        };
-
-        let task_id = uuid::Uuid::new_v4().to_string();
-
-        match &locked_trigger.component {
-            Some(component) => {
-                let bytes = self
-                    .resolve_component_bytes(&component.name, &component.version)
-                    .await?;
-
-                let capabilities =
-                    capabilities_factory.build_default(execution_id, &trigger_id);
-
-                if cancel.is_cancelled() {
-                    return Err(OrchestratorError::Cancelled);
-                }
-
-                let rt = map_runtime_type(&component.runtime_type);
-                let output = self
-                    .registry
-                    .execute(
-                        rt,
-                        &bytes,
-                        capabilities,
-                        RuntimeTaskInput { data: payload.clone() },
-                    )
-                    .await
-                    .map_err(|e| OrchestratorError::TaskExecution { source: e })?;
-
-                // Check output for pending status → short-circuit
-                let is_pending = output
-                    .data
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| s == "pending");
-
-                if is_pending {
-                    info!(
-                        execution_id = %execution_id,
-                        node_id = %trigger_id,
-                        "trigger component returned pending, short-circuiting"
-                    );
-                    Ok(TriggerOutcome::ShortCircuit(NodeResult {
-                        task_id,
-                        node_id: trigger_id,
-                        input: payload,
-                        resolved_input: serde_json::Value::Null,
-                        output: output.data,
-                    }))
-                } else {
-                    info!(
-                        execution_id = %execution_id,
-                        node_id = %trigger_id,
-                        "trigger component returned completed"
-                    );
-                    Ok(TriggerOutcome::Continue(NodeResult {
-                        task_id,
-                        node_id: trigger_id,
-                        input: payload,
-                        resolved_input: serde_json::Value::Null,
-                        output: output.data,
-                    }))
-                }
-            }
-            None => {
-                // No component — pass through the payload directly
-                Ok(TriggerOutcome::Continue(NodeResult {
-                    task_id,
-                    node_id: trigger_id,
-                    input: payload.clone(),
-                    resolved_input: serde_json::Value::Null,
-                    output: payload,
-                }))
-            }
-        }
-    }
-
     /// Find nodes that are ready to execute (all upstream nodes completed).
     fn find_ready_nodes(&self, completed: &HashMap<String, NodeResult>) -> Vec<String> {
         let graph = self.workflow.graph();
@@ -517,10 +355,12 @@ impl Orchestrator {
     }
 
     /// Spawn tasks to execute all ready nodes in parallel.
+    #[allow(clippy::too_many_arguments)]
     fn execute_ready_nodes(
         &self,
         ready: &[String],
         completed: &HashMap<String, NodeResult>,
+        payload: &serde_json::Value,
         execution_id: &str,
         _cancel: &CancellationToken,
         capabilities_factory: &CapabilitiesFactory,
@@ -541,11 +381,17 @@ impl Orchestrator {
             let upstream_ids: Vec<String> = graph.upstream(&node_id).to_vec();
             let is_join = graph.is_join_point(&node_id);
 
-            // Gather upstream data
-            let upstream_data: HashMap<String, serde_json::Value> = upstream_ids
-                .iter()
-                .filter_map(|id| completed.get(id).map(|r| (id.clone(), r.output.clone())))
-                .collect();
+            // Gather upstream data. Entry-point nodes (no upstream) receive
+            // the workflow payload as if it were a single upstream output,
+            // so templates like `{{ field }}` resolve against the payload.
+            let upstream_data: HashMap<String, serde_json::Value> = if upstream_ids.is_empty() {
+                HashMap::from([("_payload".to_string(), payload.clone())])
+            } else {
+                upstream_ids
+                    .iter()
+                    .filter_map(|id| completed.get(id).map(|r| (id.clone(), r.output.clone())))
+                    .collect()
+            };
 
             let task_id = uuid::Uuid::new_v4().to_string();
 
@@ -650,9 +496,6 @@ impl Orchestrator {
                             output: input,
                         })
                     }
-                    NodeType::Trigger(_) => Err(OrchestratorError::InvalidGraph {
-                        message: "trigger nodes should not be executed in the loop".to_string(),
-                    }),
                     NodeType::Loop(_) => Err(OrchestratorError::InvalidGraph {
                         message: "loop nodes not yet implemented".to_string(),
                     }),
@@ -663,50 +506,14 @@ impl Orchestrator {
         Ok(handles)
     }
 
-    /// Find all trigger nodes in the workflow.
-    fn find_trigger_nodes(&self) -> Vec<String> {
-        self.workflow
-            .nodes
-            .iter()
-            .filter(|(_, node)| matches!(node.node_type, NodeType::Trigger(_)))
-            .map(|(id, _)| id.clone())
-            .collect()
-    }
-
     /// Validate the workflow graph.
     fn validate_workflow(&self) -> Result<(), OrchestratorError> {
         let graph = self.workflow.graph();
-        let entry_points = graph.entry_points();
-
-        // Enforce single trigger
-        let trigger_nodes = self.find_trigger_nodes();
-        if trigger_nodes.len() != 1 {
+        if graph.entry_points().is_empty() {
             return Err(OrchestratorError::InvalidGraph {
-                message: format!(
-                    "workflow must have exactly one trigger, found {}",
-                    trigger_nodes.len()
-                ),
+                message: "workflow has no entry points".to_string(),
             });
         }
-
-        for entry_id in entry_points {
-            let node = self
-                .workflow
-                .get_node(entry_id)
-                .ok_or_else(|| OrchestratorError::InvalidGraph {
-                    message: format!("entry point '{}' not found in nodes", entry_id),
-                })?;
-
-            if !matches!(node.node_type, NodeType::Trigger(_)) {
-                return Err(OrchestratorError::InvalidGraph {
-                    message: format!(
-                        "node '{}' has no incoming edges but is not a trigger (orphan node)",
-                        entry_id
-                    ),
-                });
-            }
-        }
-
         Ok(())
     }
 }

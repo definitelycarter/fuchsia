@@ -2,7 +2,7 @@
 
 Bottom-to-top review of the codebase. Findings organized by severity, with specific file paths and line references.
 
-> **Last updated** after the runtime unification refactor: `fuschia-runtime`, `fuschia-engine`, `fuschia-host`, `fuschia-task-host`, `fuschia-trigger-host`, `fuschia-task`, `fuschia-trigger`, `fuschia-world`, `fuschia-artifact` have been removed. Triggers now execute through the same `RuntimeRegistry`/`NodeExecutor` path as tasks.
+> **Last updated** after the runtime unification refactor: `fuschia-runtime`, `fuschia-engine`, `fuschia-host`, `fuschia-task-host`, `fuschia-task` have been removed. Workflows are now invoked manually with a payload that flows into entry-point nodes.
 
 ## Bugs (broken right now)
 
@@ -12,7 +12,7 @@ Bottom-to-top review of the codebase. Findings organized by severity, with speci
 
 ### ~~2. `config::get()` WIT import always returns None~~
 
-> **Status: Resolved** — `fuschia-host`, `fuschia-task-host`, and `fuschia-trigger-host` have been deleted. Config is now provided through the `Capabilities` struct and wired per-node by the orchestrator.
+> **Status: Resolved** — `fuschia-host` and `fuschia-task-host` have been deleted. Config is now provided through the `Capabilities` struct and wired per-node by the orchestrator.
 
 ### 3. Lexicographic version sort
 
@@ -24,7 +24,7 @@ Registry uses plain string comparison for "latest" version. `10.0.0` sorts lower
 
 ### ~~4. `futures::executor::block_on` in async context~~
 
-> **Status: Resolved** — `fuschia-task-host` and `fuschia-trigger-host` have been deleted. The Lua runtime uses `block_on` for host capabilities but this is documented as an open question in the Lua runtime docs.
+> **Status: Resolved** — `fuschia-task-host` has been deleted. The Lua runtime uses `block_on` for host capabilities but this is documented as an open question in the Lua runtime docs.
 
 ### ~~5. Missing explicit `wasm_component_model(true)`~~
 
@@ -44,7 +44,7 @@ Panics in environments where the home directory cannot be determined (Docker con
 
 ### ~~8. Orphan crates~~
 
-> **Status: Resolved** — All five orphan crates (`fuschia-task`, `fuschia-trigger`, `fuschia-artifact`, `fuschia-world`, `fuschia-engine`) have been removed from the workspace.
+> **Status: Resolved** — Orphan crates (`fuschia-task`, `fuschia-engine`) have been removed from the workspace.
 
 ### ~~9. Dead code in fuschia-host~~
 
@@ -58,7 +58,7 @@ Defines 5 variants (`NodeNotFound`, `InvalidEdge`, `NoEntryPoints`, `ComponentRe
 
 ### ~~11. Dead `load_component` exports~~
 
-> **Status: Resolved** — Both `fuschia-task-host` and `fuschia-trigger-host` have been deleted.
+> **Status: Resolved** — `fuschia-task-host` has been deleted.
 
 ### 12. Dead `RegistryError::NotFound` variant
 
@@ -96,10 +96,6 @@ Resolver sets it, orchestrator ignores it. No code ever reads this field.
 
 `retry_backoff` and `retry_initial_delay_ms` from `WorkflowDef` are not passed through during resolution. Users who configure these fields get no error and no effect.
 
-### ~~19. Near-identical `LockedComponent` and `LockedTriggerComponent`~~
-
-> **Status: Resolved** — `LockedTriggerComponent` has been removed. `LockedTrigger.component` now uses `Option<LockedComponent>`, with `task_name` serving as the export name for both tasks and triggers.
-
 ### 20. Non-deterministic entry_points order
 
 **File:** `crates/fuschia-workflow/src/graph.rs`
@@ -114,13 +110,13 @@ Payload is inserted as `upstream_data.insert("_payload".to_string(), ...)`. Undo
 
 ## Code quality
 
-### ~~22. Massive duplication between task-host and trigger-host~~
+### ~~22. Massive duplication between host crates~~
 
-> **Status: Resolved** — Both `fuschia-task-host` and `fuschia-trigger-host` have been deleted. Host capabilities are now shared through the `Capabilities` struct, with each runtime writing thin glue to wire its VM's calling convention.
+> **Status: Resolved** — `fuschia-task-host` has been deleted. Host capabilities are now shared through the `Capabilities` struct, with each runtime writing thin glue to wire its VM's calling convention.
 
 ### ~~23. Linker recreated per execution~~
 
-> **Status: Resolved** — Both `fuschia-task-host` and `fuschia-trigger-host` have been deleted. The `WasmExecutor` in `fuschia-task-runtime-wasm` owns its own linker strategy.
+> **Status: Resolved** — `fuschia-task-host` has been deleted. The `WasmExecutor` in `fuschia-task-runtime-wasm` owns its own linker strategy.
 
 ### 24. `unwrap()` in production code
 

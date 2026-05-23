@@ -22,12 +22,10 @@
 - [Resolution](./workflows/resolution.md)
 - [Execution](./workflows/execution.md)
 - [Input Resolution](./workflows/input-resolution.md)
-- [Triggers](./workflows/triggers.md)
 
 # Components
 
 - [Tasks](./components/tasks.md)
-- [Triggers](./components/triggers.md)
 - [Capabilities](./components/capabilities.md)
 - [Packaging](./components/packaging.md)
 - [Command Execution](./components/command-execution.md)

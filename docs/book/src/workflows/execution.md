@@ -9,9 +9,7 @@ invoke(payload, cancel)
   │
   ├─ validate_workflow()
   │
-  ├─ execute_trigger(payload)
-  │    Completed → continue
-  │    Pending → short-circuit, return
+  ├─ seed entry-point nodes with `payload` as upstream data
   │
   └─ loop:
        ├─ find_ready_nodes(completed)
@@ -22,15 +20,15 @@ invoke(payload, cancel)
 
 ## Parallel Execution
 
-Parallelism emerges from graph structure. When a node has multiple downstream edges, the downstream nodes become ready simultaneously and execute as concurrent tokio tasks.
+Parallelism emerges from graph structure. Multiple entry-point nodes (nodes with no incoming edges) all receive the payload and execute concurrently. When a node has multiple downstream edges, the downstream nodes become ready simultaneously and execute as concurrent tokio tasks.
 
 ```
-[Trigger] → [A] → [D]
-           → [B] → [D]
-           → [C] → [D]
+[A] → [D]
+[B] → [D]
+[C] → [D]
 ```
 
-In this graph, A, B, and C execute in parallel. D waits for all three.
+If A, B, and C are all entry points, they execute in parallel against the invocation payload. D waits for all three.
 
 ## Ready Node Detection
 

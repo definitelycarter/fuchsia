@@ -7,6 +7,5 @@ mod registry;
 pub use error::RegistryError;
 pub use fs_registry::FsComponentRegistry;
 pub use in_memory::InMemoryComponentRegistry;
-pub use fuschia_config::TriggerType;
-pub use manifest::{ComponentCapabilities, ComponentManifest, TaskExport, TriggerExport};
+pub use manifest::{ComponentCapabilities, ComponentManifest, TaskExport};
 pub use registry::{ComponentRegistry, InstalledComponent};

@@ -100,7 +100,7 @@ The `All` strategy requires every branch to succeed. If any branch fails (after 
       "component": "db-query",
       "inputs": {
         "query": "SELECT * FROM users WHERE id = $1",
-        "params": ["$.trigger.user_id"]
+        "params": ["{{ user_id }}"]
       }
     },
     {
@@ -161,6 +161,8 @@ The `All` strategy requires every branch to succeed. If any branch fails (after 
 }
 ```
 
+`fetch_user` has no incoming edges, so it is the entry point and receives the invocation payload directly. `{{ user_id }}` reads the `user_id` field of the payload.
+
 ### Workflow Definition (Using `Any` Strategy)
 
 The `Any` strategy proceeds if at least one branch succeeds. This is useful when branches are "nice to have" rather than critical.
@@ -175,7 +177,7 @@ The `Any` strategy proceeds if at least one branch succeeds. This is useful when
       "component": "db-query",
       "inputs": {
         "query": "SELECT * FROM users WHERE id = $1",
-        "params": ["$.trigger.user_id"]
+        "params": ["{{ user_id }}"]
       }
     },
     {
@@ -356,10 +358,10 @@ A comprehensive example showing retries, non-critical nodes, and mixed success/f
 
 ```mermaid
 graph LR
-    A[Order Created] --> B[Process Payment]
+    B[Process Payment]
     B -->|"retry 1: failed"| B
     B -->|"retry 2: succeeded"| C[Allocate Inventory]
-    A --> D[Send Order Confirmation Email]
+    D[Send Order Confirmation Email]
     C --> E[Stage for Shipping]
     E --> F[Send Shipping Email]
     D --> G[Join]
@@ -370,20 +372,19 @@ graph LR
 
 ### Description
 
-This workflow processes a new order with the following behavior:
+The workflow is invoked with an order payload (e.g., `{ "order_id": "...", "total": ..., "payment_method": "...", "customer_email": "...", "line_items": [...], "shipping_address": {...} }`). `process_payment` and `send_order_confirmation` are both entry-point nodes that read fields directly from the payload.
 
-1. **Order Created** - Trigger event
-2. **Process Payment** - Critical node with retries
+1. **Process Payment** - Critical entry point with retries
    - First attempt fails (e.g., payment gateway timeout)
    - Retry succeeds
-3. **Send Order Confirmation Email** - Non-critical, runs in parallel with payment
+2. **Send Order Confirmation Email** - Non-critical entry point, runs in parallel with payment
    - Succeeds
-4. **Allocate Inventory** - Critical, runs after payment succeeds
-5. **Stage for Shipping** - Critical
-6. **Send Shipping Email** - Non-critical
+3. **Allocate Inventory** - Critical, runs after payment succeeds
+4. **Stage for Shipping** - Critical
+5. **Send Shipping Email** - Non-critical
    - Fails (e.g., email service down)
-7. **Join** - Waits for all branches
-8. **Complete Order** - Final status update
+6. **Join** - Waits for all branches
+7. **Complete Order** - Final status update
 
 **Outcome:** Workflow completes with `completed_with_errors` status because:
 - All critical nodes succeeded
@@ -405,19 +406,12 @@ This workflow processes a new order with the following behavior:
   },
   "nodes": [
     {
-      "node_id": "order_created",
-      "component": "event-trigger",
-      "inputs": {
-        "event_type": "order.created"
-      }
-    },
-    {
       "node_id": "process_payment",
       "component": "payment-processor",
       "inputs": {
-        "order_id": "$.order_created.output.order_id",
-        "amount": "$.order_created.output.total",
-        "payment_method": "$.order_created.output.payment_method"
+        "order_id": "{{ order_id }}",
+        "amount": "{{ total }}",
+        "payment_method": "{{ payment_method }}"
       },
       "config": {
         "retry": {
@@ -430,10 +424,9 @@ This workflow processes a new order with the following behavior:
       "node_id": "send_order_confirmation",
       "component": "email-sender",
       "inputs": {
-        "to": "$.order_created.output.customer_email",
-        "subject": "Order Confirmed: #$.order_created.output.order_id",
-        "template": "order_confirmation",
-        "data": "$.order_created.output"
+        "to": "{{ customer_email }}",
+        "subject": "Order Confirmed: #{{ order_id }}",
+        "template": "order_confirmation"
       },
       "config": {
         "fail_workflow": false
@@ -443,8 +436,8 @@ This workflow processes a new order with the following behavior:
       "node_id": "allocate_inventory",
       "component": "inventory-allocator",
       "inputs": {
-        "order_id": "$.order_created.output.order_id",
-        "items": "$.order_created.output.line_items"
+        "order_id": "$.process_payment.output.order_id",
+        "items": "$.process_payment.output.line_items"
       },
       "config": {
         "fail_workflow": true
@@ -454,9 +447,8 @@ This workflow processes a new order with the following behavior:
       "node_id": "stage_for_shipping",
       "component": "shipping-stager",
       "inputs": {
-        "order_id": "$.order_created.output.order_id",
-        "allocation": "$.allocate_inventory.output",
-        "shipping_address": "$.order_created.output.shipping_address"
+        "order_id": "$.allocate_inventory.output.order_id",
+        "allocation": "$.allocate_inventory.output"
       },
       "config": {
         "fail_workflow": true
@@ -466,11 +458,10 @@ This workflow processes a new order with the following behavior:
       "node_id": "send_shipping_email",
       "component": "email-sender",
       "inputs": {
-        "to": "$.order_created.output.customer_email",
-        "subject": "Your Order Has Shipped: #$.order_created.output.order_id",
+        "to": "$.stage_for_shipping.output.customer_email",
+        "subject": "Your Order Has Shipped: #$.stage_for_shipping.output.order_id",
         "template": "shipping_notification",
         "data": {
-          "order": "$.order_created.output",
           "tracking": "$.stage_for_shipping.output.tracking_number"
         }
       },
@@ -492,7 +483,7 @@ This workflow processes a new order with the following behavior:
       "node_id": "complete_order",
       "component": "order-updater",
       "inputs": {
-        "order_id": "$.order_created.output.order_id",
+        "order_id": "$.join.output.stage_for_shipping.order_id",
         "status": "completed",
         "notes": {
           "payment_processed": true,
@@ -503,8 +494,6 @@ This workflow processes a new order with the following behavior:
     }
   ],
   "edges": [
-    { "from": "order_created", "to": "process_payment" },
-    { "from": "order_created", "to": "send_order_confirmation" },
     { "from": "process_payment", "to": "allocate_inventory" },
     { "from": "allocate_inventory", "to": "stage_for_shipping" },
     { "from": "stage_for_shipping", "to": "send_shipping_email" },
@@ -520,15 +509,14 @@ This workflow processes a new order with the following behavior:
 
 | Step | Node | Attempt | Result | Notes |
 |------|------|---------|--------|-------|
-| 1 | order_created | 1 | succeeded | Trigger received |
-| 2 | process_payment | 1 | failed | Gateway timeout |
-| 2 | send_order_confirmation | 1 | succeeded | Runs in parallel |
-| 3 | process_payment | 2 | succeeded | Retry succeeded |
-| 4 | allocate_inventory | 1 | succeeded | |
-| 5 | stage_for_shipping | 1 | succeeded | |
-| 6 | send_shipping_email | 1 | failed | Email service down |
-| 7 | join | 1 | succeeded | All branches complete |
-| 8 | complete_order | 1 | succeeded | |
+| 1 | process_payment | 1 | failed | Gateway timeout |
+| 1 | send_order_confirmation | 1 | succeeded | Entry point, runs in parallel |
+| 2 | process_payment | 2 | succeeded | Retry succeeded |
+| 3 | allocate_inventory | 1 | succeeded | |
+| 4 | stage_for_shipping | 1 | succeeded | |
+| 5 | send_shipping_email | 1 | failed | Email service down |
+| 6 | join | 1 | succeeded | All branches complete |
+| 7 | complete_order | 1 | succeeded | |
 
 **Final Status:** `completed_with_errors`
 - Critical path: All succeeded

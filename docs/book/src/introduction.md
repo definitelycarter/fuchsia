@@ -14,7 +14,7 @@ Fuschia is a workflow engine similar to [n8n](https://n8n.io), built on a plugga
 
 1. **Author** a workflow as a JSON config — nodes, edges, and input templates
 2. **Resolve** the config into a locked workflow — validate the graph, resolve component references, lock versions and digests
-3. **Execute** — the engine walks the graph wave-by-wave, resolves inputs via minijinja templates, provisions nodes with a runtime, and collects outputs
+3. **Invoke** — the orchestrator is called with a JSON payload; nodes with no incoming edges (entry points) receive the payload, and the engine walks the graph wave-by-wave, resolves inputs via minijinja templates, provisions nodes with a runtime, and collects outputs
 
 ## Project Status
 

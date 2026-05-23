@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use fuschia_config::TriggerType;
 use serde::{Deserialize, Serialize};
 
 /// Metadata describing an installed component.
@@ -25,10 +24,6 @@ pub struct ComponentManifest {
   /// Tasks exported by this component
   #[serde(default)]
   pub tasks: HashMap<String, TaskExport>,
-
-  /// Triggers exported by this component
-  #[serde(default)]
-  pub triggers: HashMap<String, TriggerExport>,
 }
 
 /// Capabilities required by a component.
@@ -51,19 +46,6 @@ pub struct TaskExport {
 
   /// JSON Schema for task inputs
   pub schema: serde_json::Value,
-}
-
-/// A trigger exported by a component.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerExport {
-  /// Description of what this trigger does
-  pub description: String,
-
-  /// JSON Schema for trigger configuration
-  pub schema: serde_json::Value,
-
-  /// The type of trigger (poll, webhook, etc.)
-  pub trigger_type: TriggerType,
 }
 
 impl ComponentManifest {
@@ -91,7 +73,6 @@ mod tests {
       digest: "sha256:abc123".to_string(),
       capabilities: ComponentCapabilities::default(),
       tasks: HashMap::new(),
-      triggers: HashMap::new(),
     };
 
     assert_eq!(manifest.dir_name(), "my-org--sentiment-analysis--1.0.0");
@@ -106,14 +87,13 @@ mod tests {
       digest: "sha256:def456".to_string(),
       capabilities: ComponentCapabilities::default(),
       tasks: HashMap::new(),
-      triggers: HashMap::new(),
     };
 
     assert_eq!(manifest.dir_name(), "simple-component--2.1.0");
   }
 
   #[test]
-  fn test_manifest_with_tasks_and_triggers() {
+  fn test_manifest_with_tasks() {
     let mut tasks = HashMap::new();
     tasks.insert(
       "write-row".to_string(),
@@ -129,22 +109,6 @@ mod tests {
       },
     );
 
-    let mut triggers = HashMap::new();
-    triggers.insert(
-      "row-added".to_string(),
-      TriggerExport {
-        description: "Fires when a row is added".to_string(),
-        schema: serde_json::json!({
-            "type": "object",
-            "required": ["spreadsheet_id"],
-            "properties": {
-                "spreadsheet_id": { "type": "string" }
-            }
-        }),
-        trigger_type: TriggerType::Poll { interval_ms: 30000 },
-      },
-    );
-
     let manifest = ComponentManifest {
       name: "my-org/google-sheets".to_string(),
       version: "1.0.0".to_string(),
@@ -155,12 +119,9 @@ mod tests {
         allowed_paths: vec![],
       },
       tasks,
-      triggers,
     };
 
     assert_eq!(manifest.tasks.len(), 1);
-    assert_eq!(manifest.triggers.len(), 1);
     assert!(manifest.tasks.contains_key("write-row"));
-    assert!(manifest.triggers.contains_key("row-added"));
   }
 }

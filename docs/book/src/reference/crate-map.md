@@ -77,6 +77,4 @@ The following crates were removed during the runtime abstraction refactor:
 | `fuschia-engine` | `WorkflowRunner` wrapper was unused; CLI uses orchestrator directly |
 | `fuschia-task` | Superseded by `fuschia-task-runtime` |
 | `fuschia-task-host` | Superseded by `fuschia-task-runtime-wasm` |
-| `fuschia-trigger` | Superseded by unified trigger execution in orchestrator |
-| `fuschia-trigger-host` | Triggers now execute through `RuntimeRegistry` like tasks |
 | `fuschia-host` | Shared wasmtime infra; replaced by per-capability crates (host-kv, host-config, etc.) |

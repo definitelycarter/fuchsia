@@ -13,7 +13,7 @@ pub enum OrchestratorError {
     #[error("failed to serialize input: {message}")]
     InputSerialization { message: String },
 
-    /// Task or trigger execution failed via the RuntimeRegistry.
+    /// Task execution failed via the RuntimeRegistry.
     #[error("task execution failed: {source}")]
     TaskExecution {
         #[source]

@@ -20,7 +20,7 @@ mod workflow;
 
 pub use component::ComponentRef;
 pub use edge::Edge;
-pub use enums::{ExecutionMode, JoinStrategy, LoopFailureMode, RetryBackoff, RuntimeType, TriggerType};
+pub use enums::{ExecutionMode, JoinStrategy, LoopFailureMode, RetryBackoff, RuntimeType};
 pub use input::InputValue;
-pub use node::{NodeDef, NodeType, TriggerComponentRef};
+pub use node::{NodeDef, NodeType};
 pub use workflow::WorkflowDef;
