@@ -12,11 +12,10 @@ This skill is for end-of-feature doc updates. It is not for writing new standalo
 ## 0. Doc surfaces in this repo (read this first)
 
 - `README.md` — overview, feature list
-- `AGENTS.md` — coding guidelines, project structure, dev commands. **Frequently drifts** (currently lists removed pre-unification crates) — touch this whenever crate layout or workspace conventions change.
-- `docs/book/src/` — published mdBook. Canonical for architecture, runtimes, workflows, components, data model, examples, reference.
-- `docs/DESIGN.md`, `docs/USE_CASES.md`, `docs/ANALYSIS.md`, `docs/COMMAND_EXECUTION.md` — **legacy top-level docs that duplicate mdBook pages.** They predate the mdBook migration. Treat the mdBook as canonical; if you touch a topic that exists in both, update both in the same commit and consider flagging the duplication to the user so it can be resolved at the source.
-- `crates/<crate>/README.md` — per-crate readmes (currently `fuchsia-component-registry`, `fuchsia-resolver`).
-- `examples/README.md` — examples index.
+- `AGENTS.md` — coding guidelines, project structure, dev commands. Touch this whenever crate layout or workspace conventions change.
+- `docs/book/src/` — published mdBook. Canonical for architecture, actor implementations, graphs, and reference.
+- `crates/<crate>/README.md` — per-crate readmes (none currently — the actor crates documentation lives in the mdBook instead).
+- `examples/README.md` — examples index (pre-actor; will need rewriting when new actor-shaped examples land).
 
 ## 1. Affected-doc map
 
