@@ -70,7 +70,22 @@ Components built against the canonical `actor-component` world export the
 `fuchsia:actor/actor` interface and import `fuchsia:actor/emit`:
 
 ```wit
+interface types {
+  variant payload-value {
+    json(string),
+    binary(list<u8>),
+    empty,
+  }
+
+  record payload {
+    %type: string,
+    value: payload-value,
+  }
+}
+
 interface actor {
+  use types.{payload};
+
   record context {
     execution-id: string,
     node-id: string,
@@ -78,20 +93,23 @@ interface actor {
   }
 
   setup:    func(ctx: context) -> result<_, string>;
-  handle:   func(ctx: context, message: string) -> result<_, string>;
+  handle:   func(ctx: context, msg: payload) -> result<_, string>;
   teardown: func(ctx: context) -> result<_, string>;
 }
 
 interface emit {
-  send: func(data: string) -> result<_, string>;
+  use types.{payload};
+  send: func(msg: payload) -> result<_, string>;
 }
 ```
 
 All three lifecycle exports are required. Stateless components implement
 `setup` and `teardown` as no-ops returning `Ok(())`. Inbound messages are
-JSON-encoded strings; the actor handles marshalling. Outbound emissions
-flow through the host-imported `emit.send`, not through `handle`'s return
-value — `handle` returns `Ok(())` once it's done processing.
+typed `payload` values: a `%type` discriminator and a `payload-value`
+variant (`json(string)`, `binary(list<u8>)`, or `empty`). Outbound
+emissions flow through the host-imported `emit.send`, not through
+`handle`'s return value — `handle` returns `Ok(())` once it's done
+processing.
 
 A component built with `wit-bindgen` (e.g., via `cargo-component`) ends up
 writing something like:
@@ -106,11 +124,17 @@ impl exports::fuchsia::actor::actor::Guest for MyComponent {
 
   fn handle(
     ctx: exports::fuchsia::actor::actor::Context,
-    message: String,
+    msg: fuchsia::actor::types::Payload,
   ) -> Result<(), String> {
-    // ... do work on `message` (parse JSON, transform, etc.) ...
-    let output = serde_json::to_string(&result).unwrap();
-    fuchsia::actor::emit::send(&output)
+    // msg.type_ is the event discriminator; msg.value carries the data
+    let json_str = match msg.value {
+      fuchsia::actor::types::PayloadValue::Json(s) => s,
+      _ => "null".to_string(),
+    };
+    fuchsia::actor::emit::send(&fuchsia::actor::types::Payload {
+      type_: "result".to_string(),
+      value: fuchsia::actor::types::PayloadValue::Json(json_str),
+    })
   }
 
   fn teardown(_ctx: exports::fuchsia::actor::actor::Context) -> Result<(), String> {
@@ -134,9 +158,9 @@ When the orchestrator spawns the actor:
    subsequent lifecycle call.
 3. `actor.setup(ctx)` is invoked. Use this to open connections, subscribe
    to streams, or perform discovery.
-4. For each inbound message: the actor serializes the inbox `Value` to
-   JSON and calls `actor.handle(ctx, message)`. The component pushes any
-   outgoing payloads via `emit::send` during the handle call.
+4. For each inbound message: the actor converts the inbox `Message` to a
+   WIT `payload` and calls `actor.handle(ctx, msg)`. The component pushes
+   any outgoing payloads via `emit::send` during the handle call.
 5. On cancellation or inbox close, `actor.teardown(ctx)` is invoked
    before the store is dropped — long-lived resources (BLE handles, MQTT
    sessions) get a chance to close cleanly.
@@ -162,7 +186,7 @@ The off-the-shelf `DefaultHost` targets the canonical
   `"wasm.component"`. The actor's tokio task is already wrapped in a span
   carrying the `node` id, so log events automatically pick up context.
 - `fuchsia:http/outbound` — delegates to the injected `HttpClient`.
-- `fuchsia:actor/emit` — forwards JSON payloads to the actor's outbound
+- `fuchsia:actor/emit` — forwards typed payloads to the actor's outbound
   channel. Returns `Err("channel closed")` to the component if every
   downstream is gone; the component typically propagates that out of
   `handle`, which ends the actor cleanly.

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fuchsia_actor::{Context, Emitter};
+use fuchsia_actor::{Context, Emitter, Message};
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
 use wasmtime_wasi::WasiView;
@@ -78,7 +78,7 @@ pub trait WasmHost: 'static + Send + Sync {
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
     ctx: &Context,
-    message: &str,
+    msg: &Message,
   ) -> wasmtime::Result<Result<(), String>>;
 
   /// Invoke the component's `actor.teardown` export. Called once on

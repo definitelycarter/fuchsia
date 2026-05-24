@@ -6,6 +6,7 @@ package fuchsia:platform@0.1.0;
 world actor-platform {
   import fuchsia:log/log@0.1.0;
   import fuchsia:http/outbound@0.1.0;
+  import fuchsia:actor/types@0.1.0;
   import fuchsia:actor/emit@0.1.0;
 }
 

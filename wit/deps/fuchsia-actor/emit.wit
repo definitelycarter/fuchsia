@@ -1,11 +1,13 @@
 package fuchsia:actor@0.1.0;
 
-/// Host-provided emit interface. Components call `send` to push a payload
-/// to downstream actors via the per-edge mpsc channel the host owns. The
-/// host fans out the payload across all outgoing edges.
+/// Host-provided emit interface. Components call `send` to push a typed
+/// payload to downstream actors via the per-edge mpsc channel the host owns.
+/// The host fans out the payload across all outgoing edges.
 interface emit {
-  /// Send a JSON-encoded payload downstream. Returns `Err("channel closed")`
-  /// if every downstream channel is closed; components typically propagate
-  /// the error out of `handle`, which ends the actor.
-  send: func(data: string) -> result<_, string>;
+  use types.{payload};
+
+  /// Send a typed payload downstream. Returns `Err("channel closed")` if
+  /// every downstream channel is closed; components typically propagate the
+  /// error out of `handle`, which ends the actor.
+  send: func(msg: payload) -> result<_, string>;
 }

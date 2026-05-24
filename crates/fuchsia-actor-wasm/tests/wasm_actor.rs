@@ -1,12 +1,12 @@
 //! End-to-end integration test: load the test wasm component, register a
-//! `WasmActor<DefaultHost>` with `fuchsia-runtime`, push a JSON payload through,
+//! `WasmActor<DefaultHost>` with `fuchsia-runtime`, push a typed payload through,
 //! and assert the component echoed it back.
 //!
 //! Requires `cargo component build --release` to have been run in
 //! `test-components/test-actor-component` first.
 
 use async_trait::async_trait;
-use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox};
+use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox, Message, MessageValue};
 use fuchsia_actor_wasm::{DefaultHost, WasmActor};
 use fuchsia_capabilities::http::{AllowedHosts, ReqwestHttp};
 use fuchsia_runtime::{ActorRegistry, Edge, Graph, Node, Orchestrator};
@@ -20,7 +20,7 @@ const TEST_WASM: &str = concat!(
 );
 
 struct Recorder {
-  out: Arc<Mutex<Vec<Value>>>,
+  out: Arc<Mutex<Vec<Message>>>,
 }
 
 #[async_trait]
@@ -30,7 +30,7 @@ impl Actor for Recorder {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(v) => self.out.lock().unwrap().push(v),
+              Some(msg) => self.out.lock().unwrap().push(msg),
               None => return Ok(()),
           }
       }
@@ -101,7 +101,10 @@ async fn wasm_actor_runs_test_component_end_to_end() {
   let orch = Orchestrator::new(Arc::new(registry));
   let handle = orch.start(&graph).expect("start workflow");
 
-  handle.send(json!(42)).await.expect("send input");
+  handle
+    .send(Message::json("test", json!(42)))
+    .await
+    .expect("send input");
 
   let results = handle.join().await;
   for (i, r) in results.iter().enumerate() {
@@ -111,8 +114,10 @@ async fn wasm_actor_runs_test_component_end_to_end() {
   let recorded = out.lock().unwrap();
   assert_eq!(recorded.len(), 1, "expected one output, got {recorded:?}");
 
-  // test-actor-component echoes back: {"echoed": <data>, "node": "<id>"}
-  let output = &recorded[0];
-  assert_eq!(output["echoed"], json!(42));
-  assert_eq!(output["node"], json!("wasm"));
+  // test-actor-component echoes back: {"echoed": <json>, "node": "<id>"}
+  let MessageValue::Json(v) = &recorded[0].value else {
+    panic!("expected JSON message");
+  };
+  assert_eq!(v["echoed"], json!(42));
+  assert_eq!(v["node"], json!("wasm"));
 }

@@ -1,7 +1,6 @@
 use crate::graph::Graph;
 use crate::registry::ActorRegistry;
-use fuchsia_actor::{ActorError, Context, Emitter, Inbox};
-use serde_json::Value;
+use fuchsia_actor::{ActorError, Context, Emitter, Inbox, Message};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -30,11 +29,11 @@ impl Orchestrator {
     ),
   )]
   pub fn start(&self, graph: &Graph) -> Result<WorkflowHandle, ActorError> {
-    let mut senders: HashMap<String, mpsc::Sender<Value>> = HashMap::new();
-    let mut receivers: HashMap<String, mpsc::Receiver<Value>> = HashMap::new();
+    let mut senders: HashMap<String, mpsc::Sender<Message>> = HashMap::new();
+    let mut receivers: HashMap<String, mpsc::Receiver<Message>> = HashMap::new();
 
     for node in &graph.nodes {
-      let (tx, rx) = mpsc::channel::<Value>(CHANNEL_BUFFER);
+      let (tx, rx) = mpsc::channel::<Message>(CHANNEL_BUFFER);
       senders.insert(node.id.clone(), tx);
       receivers.insert(node.id.clone(), rx);
     }
@@ -55,7 +54,7 @@ impl Orchestrator {
     let mut join_handles: Vec<JoinHandle<Result<(), ActorError>>> = Vec::new();
 
     for node in &graph.nodes {
-      let downstream: Vec<mpsc::Sender<Value>> = graph
+      let downstream: Vec<mpsc::Sender<Message>> = graph
         .edges_from(&node.id)
         .map(|edge| senders[&edge.to].clone())
         .collect();
@@ -108,7 +107,7 @@ impl Orchestrator {
 }
 
 pub struct WorkflowHandle {
-  entry: Option<mpsc::Sender<Value>>,
+  entry: Option<mpsc::Sender<Message>>,
   cancel: CancellationToken,
   join_handles: Vec<JoinHandle<Result<(), ActorError>>>,
 }
@@ -116,13 +115,13 @@ pub struct WorkflowHandle {
 impl WorkflowHandle {
   /// Push a message into the workflow's entry node.
   #[tracing::instrument(name = "workflow.send", level = "trace", skip_all)]
-  pub async fn send(&self, value: Value) -> Result<(), ActorError> {
+  pub async fn send(&self, msg: Message) -> Result<(), ActorError> {
     let entry = self
       .entry
       .as_ref()
       .ok_or_else(|| ActorError::Other("entry already closed".into()))?;
     entry
-      .send(value)
+      .send(msg)
       .await
       .map_err(|e| ActorError::Send(e.to_string()))
   }

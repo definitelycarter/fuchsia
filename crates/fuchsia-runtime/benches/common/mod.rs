@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox};
+use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox, Message};
 use fuchsia_runtime::{ActorRegistry, Edge, Graph, Node};
 use serde_json::Value;
 
@@ -14,7 +14,7 @@ impl Actor for Passthrough {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(v) => emit.send(v).await?,
+              Some(msg) => emit.send(msg).await?,
               None => return Ok(()),
           }
       }
@@ -114,4 +114,8 @@ pub fn fan_out(width: usize) -> Graph {
     nodes,
     edges,
   }
+}
+
+pub fn bench_msg(i: u64) -> Message {
+  Message::json("bench", serde_json::json!(i))
 }

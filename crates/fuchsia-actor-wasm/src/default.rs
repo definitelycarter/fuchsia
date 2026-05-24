@@ -4,7 +4,7 @@
 
 use crate::host::WasmHost;
 use async_trait::async_trait;
-use fuchsia_actor::{Context, Emitter};
+use fuchsia_actor::{Context, Emitter, Message, MessageValue};
 use fuchsia_capabilities::http::{HttpClient, HttpError, HttpRequest, HttpResponse};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ wasmtime::component::bindgen!({
 });
 
 use exports::fuchsia::actor::actor::Context as WitContext;
+use fuchsia::actor::types::{Payload, PayloadValue};
 
 /// Per-`Store` state for [`DefaultHost`]. Holds the `WasiCtx`, the HTTP
 /// client, and the downstream `Emitter` so the `emit` import callback can
@@ -95,14 +96,18 @@ impl fuchsia::http::outbound::Host for DefaultHostState {
   }
 }
 
+// ---- types import: shared payload type definitions (no functions) ---------
+
+impl fuchsia::actor::types::Host for DefaultHostState {}
+
 // ---- emit import: forward component emissions to the downstream channel ---
 
 impl fuchsia::actor::emit::Host for DefaultHostState {
-  async fn send(&mut self, data: String) -> Result<(), String> {
-    let value = serde_json::from_str(&data).map_err(|e| format!("emit: invalid JSON: {e}"))?;
+  async fn send(&mut self, msg: Payload) -> Result<(), String> {
+    let message = from_payload(msg)?;
     self
       .emitter
-      .send(value)
+      .send(message)
       .await
       .map_err(|_| "channel closed".to_string())
   }
@@ -173,12 +178,13 @@ impl WasmHost for DefaultHost {
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
     ctx: &Context,
-    message: &str,
+    msg: &Message,
   ) -> wasmtime::Result<Result<(), String>> {
     let wit_ctx = wit_context(ctx);
+    let wit_payload = to_payload(msg);
     bindings
       .fuchsia_actor_actor()
-      .call_handle(store, &wit_ctx, message)
+      .call_handle(store, &wit_ctx, &wit_payload)
       .await
   }
 
@@ -202,4 +208,30 @@ fn wit_context(ctx: &Context) -> WitContext {
     node_id: ctx.node_id.clone(),
     task_id: String::new(),
   }
+}
+
+fn to_payload(msg: &Message) -> Payload {
+  Payload {
+    type_: msg.type_.clone(),
+    value: match &msg.value {
+      MessageValue::Json(v) => PayloadValue::Json(v.to_string()),
+      MessageValue::Binary(b) => PayloadValue::Binary(b.clone()),
+      MessageValue::Empty => PayloadValue::Empty,
+    },
+  }
+}
+
+fn from_payload(p: Payload) -> Result<Message, String> {
+  let value = match p.value {
+    PayloadValue::Json(s) => {
+      let v = serde_json::from_str(&s).map_err(|e| format!("emit: invalid JSON: {e}"))?;
+      MessageValue::Json(v)
+    }
+    PayloadValue::Binary(b) => MessageValue::Binary(b),
+    PayloadValue::Empty => MessageValue::Empty,
+  };
+  Ok(Message {
+    type_: p.type_,
+    value,
+  })
 }

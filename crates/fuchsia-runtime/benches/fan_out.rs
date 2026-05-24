@@ -6,12 +6,11 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use fuchsia_runtime::{ActorRegistry, Orchestrator};
-use serde_json::json;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 mod common;
-use common::{fan_out, registry};
+use common::{bench_msg, fan_out, registry};
 
 const MESSAGES_PER_ITER: u64 = 1_000;
 
@@ -32,7 +31,7 @@ fn bench_fan_out(c: &mut Criterion) {
           let orch = Orchestrator::new(reg);
           let handle = orch.start(&graph).expect("start workflow");
           for i in 0..MESSAGES_PER_ITER {
-            handle.send(json!(i)).await.expect("send into entry");
+            handle.send(bench_msg(i)).await.expect("send into entry");
           }
           let results = handle.join().await;
           black_box(results);

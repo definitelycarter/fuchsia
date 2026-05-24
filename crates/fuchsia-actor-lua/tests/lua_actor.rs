@@ -1,9 +1,9 @@
 //! End-to-end integration test: register a `LuaActor<DefaultLuaHost>` with
-//! `fuchsia-runtime`, push a JSON payload through, and assert the script
+//! `fuchsia-runtime`, push a typed payload through, and assert the script
 //! echoed it back.
 
 use async_trait::async_trait;
-use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox};
+use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox, Message, MessageValue};
 use fuchsia_actor_lua::{DefaultLuaHost, LuaActor};
 use fuchsia_capabilities::http::{AllowedHosts, ReqwestHttp};
 use fuchsia_runtime::{ActorRegistry, Edge, Graph, Node, Orchestrator};
@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 struct Recorder {
-  out: Arc<Mutex<Vec<Value>>>,
+  out: Arc<Mutex<Vec<Message>>>,
 }
 
 #[async_trait]
@@ -21,7 +21,7 @@ impl Actor for Recorder {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(v) => self.out.lock().unwrap().push(v),
+              Some(msg) => self.out.lock().unwrap().push(msg),
               None => return Ok(()),
           }
       }
@@ -30,9 +30,13 @@ impl Actor for Recorder {
 }
 
 const SCRIPT: &str = r#"
-function handle(ctx, message)
-  log.log("info", "lua: node " .. ctx.node_id .. " received " .. message)
-  emit(string.format('{"echoed": %s, "node": "%s"}', message, ctx.node_id))
+function handle(ctx, msg)
+  log.log("info", "lua: node " .. ctx.node_id .. " received type " .. msg.type)
+  local data = (msg.value and msg.value.data) or "null"
+  emit({
+    type = "echo",
+    value = { kind = "json", data = string.format('{"echoed": %s, "node": "%s"}', data, ctx.node_id) }
+  })
 end
 "#;
 
@@ -83,7 +87,10 @@ async fn lua_actor_runs_inline_script_end_to_end() {
   let orch = Orchestrator::new(Arc::new(registry));
   let handle = orch.start(&graph).expect("start workflow");
 
-  handle.send(json!(42)).await.expect("send input");
+  handle
+    .send(Message::json("test", json!(42)))
+    .await
+    .expect("send input");
 
   let results = handle.join().await;
   for (i, r) in results.iter().enumerate() {
@@ -93,7 +100,9 @@ async fn lua_actor_runs_inline_script_end_to_end() {
   let recorded = out.lock().unwrap();
   assert_eq!(recorded.len(), 1, "expected one output, got {recorded:?}");
 
-  let output = &recorded[0];
-  assert_eq!(output["echoed"], json!(42));
-  assert_eq!(output["node"], json!("lua"));
+  let MessageValue::Json(v) = &recorded[0].value else {
+    panic!("expected JSON message, got {:?}", recorded[0].type_);
+  };
+  assert_eq!(v["echoed"], json!(42));
+  assert_eq!(v["node"], json!("lua"));
 }

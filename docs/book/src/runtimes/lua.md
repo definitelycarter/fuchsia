@@ -4,8 +4,8 @@
 holds a Lua source string and a `LuaHost`. When the actor starts, the
 runtime creates one `mlua::Lua` VM, calls `host.populate(&lua, emitter)`
 to register globals (including `emit`), loads the script, and drives its
-lifecycle: optional `setup()`, `handle(ctx, message)` per inbound
-delivery, optional `teardown()` on shutdown. The Lua VM persists for the
+lifecycle: optional `setup()`, `handle(ctx, msg)` per inbound delivery,
+optional `teardown()` on shutdown. The Lua VM persists for the
 actor's lifetime — globals, upvalues, and module state stay live across
 every `handle` call.
 
@@ -45,7 +45,7 @@ the script will access.
 
 ## The contract
 
-A Lua actor script must define a global `handle(ctx, message)` function.
+A Lua actor script must define a global `handle(ctx, msg)` function.
 `setup()` and `teardown()` are optional — the runtime skips them if
 undefined.
 
@@ -56,15 +56,18 @@ function setup(ctx)
   log.log("info", "setup node " .. ctx.node_id)
 end
 
-function handle(ctx, message)
+function handle(ctx, msg)
   -- ctx is a table with fields: node_id, execution_id, task_id
-  -- message is a JSON-serialized string (the inbound payload)
+  -- msg is a table: { type = "...", value = { kind = "json"|"binary"|"empty", data = ... } }
 
-  log.log("info", "node " .. ctx.node_id .. " received " .. message)
+  log.log("info", "node " .. ctx.node_id .. " received " .. msg.type)
 
   -- ... do work ...
 
-  emit('{"processed": true, "node": "' .. ctx.node_id .. '"}')
+  emit({
+    type = "processed",
+    value = { kind = "json", data = '{"ok": true}' }
+  })
 end
 
 function teardown(ctx)
@@ -73,9 +76,10 @@ function teardown(ctx)
 end
 ```
 
-Inbound messages and outbound emissions are JSON strings — same as the
-Wasm side. The actor serializes the inbox `Value` before calling `handle`,
-and parses the argument to `emit` back to JSON before forwarding it
+Inbound messages arrive as a Lua table `{ type = "...", value = { kind =
+"json"|"binary"|"empty", data = ... } }` — mirroring the `payload` type
+on the Wasm side. Outbound emissions are the same shape: a table passed
+to `emit`, which the host converts to a `Message` before forwarding
 downstream.
 
 ## Actor lifecycle
@@ -89,8 +93,8 @@ When the orchestrator spawns the actor:
 3. The script source is loaded and executed, defining any functions and
    module-level state as globals or closures.
 4. If `setup` is defined, it's called once with the actor's context.
-5. For each inbound message: the actor serializes the inbox `Value` to
-   JSON and calls `handle(ctx, message)`. The script pushes any outgoing
+5. For each inbound message: the actor converts the inbox `Message` to a
+   Lua table and calls `handle(ctx, msg)`. The script pushes any outgoing
    payloads via `emit(...)` during the call.
 6. On cancellation or inbox close, `teardown(ctx)` runs if defined,
    before the VM is dropped.
@@ -118,7 +122,8 @@ local resp = http.send({
 })
 -- resp.status, resp.headers, resp.body
 
-emit('{"key": "value"}')             -- push JSON-encoded payload downstream
+emit({ type = "event", value = { kind = "json", data = '{"key":"value"}' } })
+                                     -- push typed payload downstream
 ```
 
 `http.send` returns a Lua table on success; on failure it raises a Lua
@@ -153,9 +158,13 @@ The lua integration test uses an inline script:
 
 ```rust
 const SCRIPT: &str = r#"
-function handle(ctx, message)
-  log.log("info", "lua: node " .. ctx.node_id .. " received " .. message)
-  emit(string.format('{"echoed": %s, "node": "%s"}', message, ctx.node_id))
+function handle(ctx, msg)
+  log.log("info", "lua: node " .. ctx.node_id .. " received type " .. msg.type)
+  local data = (msg.value and msg.value.data) or "null"
+  emit({
+    type = "echo",
+    value = { kind = "json", data = string.format('{"echoed": %s, "node": "%s"}', data, ctx.node_id) }
+  })
 end
 "#;
 ```

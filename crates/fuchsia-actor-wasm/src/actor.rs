@@ -72,18 +72,13 @@ impl<H: WasmHost> Actor for WasmActor<H> {
         msg = inbox.recv() => msg,
       };
 
-      let Some(value) = msg else {
+      let Some(msg) = msg else {
         break Ok(());
-      };
-
-      let data = match serde_json::to_string(&value) {
-        Ok(s) => s,
-        Err(e) => break Err(ActorError::Other(format!("input serialize: {e}"))),
       };
 
       match self
         .host
-        .call_handle(&bindings, &mut store, &ctx, &data)
+        .call_handle(&bindings, &mut store, &ctx, &msg)
         .await
       {
         Err(e) => break Err(ActorError::Other(format!("wasm trap (handle): {e}"))),

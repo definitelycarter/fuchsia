@@ -2,7 +2,7 @@
 //! (log + http + emit). Mirrors [`fuchsia_actor_wasm::DefaultHost`].
 
 use crate::host::LuaHost;
-use fuchsia_actor::Emitter;
+use fuchsia_actor::{Emitter, Message, MessageValue};
 use fuchsia_capabilities::http::{HttpClient, HttpError, HttpRequest};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,10 +88,32 @@ fn register_http(lua: &mlua::Lua, http: Arc<dyn HttpClient>) -> mlua::Result<()>
 }
 
 fn register_emit(lua: &mlua::Lua, emitter: Emitter) -> mlua::Result<()> {
-  let emit_fn = lua.create_function(move |_, data: String| {
-    let value: serde_json::Value = serde_json::from_str(&data)
-      .map_err(|e| mlua::Error::external(format!("emit: invalid JSON: {e}")))?;
-    futures::executor::block_on(emitter.send(value))
+  let emit_fn = lua.create_function(move |_, msg: mlua::Table| {
+    let type_: String = msg.get("type").unwrap_or_else(|_| "emit".to_string());
+    let value = if let Ok(value_table) = msg.get::<mlua::Table>("value") {
+      let kind: String = value_table
+        .get("kind")
+        .unwrap_or_else(|_| "empty".to_string());
+      match kind.as_str() {
+        "json" => {
+          let data: String = value_table
+            .get("data")
+            .unwrap_or_else(|_| "null".to_string());
+          let json_val = serde_json::from_str(&data)
+            .map_err(|e| mlua::Error::external(format!("emit: invalid JSON: {e}")))?;
+          MessageValue::Json(json_val)
+        }
+        "binary" => {
+          let data: mlua::String = value_table.get("data")?;
+          MessageValue::Binary(data.as_bytes().to_vec())
+        }
+        _ => MessageValue::Empty,
+      }
+    } else {
+      MessageValue::Empty
+    };
+    let message = Message { type_, value };
+    futures::executor::block_on(emitter.send(message))
       .map_err(|_| mlua::Error::external("channel closed".to_string()))?;
     Ok(())
   })?;

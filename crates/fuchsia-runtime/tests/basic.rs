@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox};
+use fuchsia_actor::{Actor, ActorError, Context, Emitter, Inbox, Message, MessageValue};
 use fuchsia_runtime::{ActorRegistry, Edge, Graph, Node, Orchestrator};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -17,7 +17,7 @@ impl Actor for Passthrough {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(v) => emit.send(v).await?,
+              Some(msg) => emit.send(msg).await?,
               None => return Ok(()),
           }
       }
@@ -34,11 +34,12 @@ impl Actor for Doubler {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(Value::Number(n)) => {
-                  let d = n.as_f64().unwrap_or(0.0) * 2.0;
-                  emit.send(json!(d)).await?;
+              Some(msg) => {
+                  if let MessageValue::Json(Value::Number(n)) = &msg.value {
+                      let d = n.as_f64().unwrap_or(0.0) * 2.0;
+                      emit.send(Message::json("doubled", json!(d))).await?;
+                  }
               }
-              Some(_) => {}
               None => return Ok(()),
           }
       }
@@ -47,7 +48,7 @@ impl Actor for Doubler {
 }
 
 struct Recorder {
-  out: Arc<Mutex<Vec<Value>>>,
+  out: Arc<Mutex<Vec<Message>>>,
 }
 
 #[async_trait]
@@ -57,7 +58,7 @@ impl Actor for Recorder {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(v) => self.out.lock().unwrap().push(v),
+              Some(msg) => self.out.lock().unwrap().push(msg),
               None => return Ok(()),
           }
       }
@@ -72,27 +73,27 @@ struct Debouncer {
 #[async_trait]
 impl Actor for Debouncer {
   async fn run(&self, mut inbox: Inbox, emit: Emitter, ctx: Context) -> Result<(), ActorError> {
-    let mut pending: Option<Value> = None;
+    let mut pending: Option<Message> = None;
     let mut timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
 
     loop {
       tokio::select! {
           _ = ctx.cancelled() => return Ok(()),
           msg = inbox.recv() => match msg {
-              Some(v) => {
-                  pending = Some(v);
+              Some(msg) => {
+                  pending = Some(msg);
                   timer = Some(Box::pin(tokio::time::sleep(self.window)));
               }
               None => {
-                  if let Some(v) = pending.take() {
-                      emit.send(v).await?;
+                  if let Some(msg) = pending.take() {
+                      emit.send(msg).await?;
                   }
                   return Ok(());
               }
           },
           _ = async { timer.as_mut().unwrap().await }, if timer.is_some() => {
-              if let Some(v) = pending.take() {
-                  emit.send(v).await?;
+              if let Some(msg) = pending.take() {
+                  emit.send(msg).await?;
               }
               timer = None;
           }
@@ -108,7 +109,7 @@ struct DebouncerConfig {
 
 // ---- Helpers ------------------------------------------------------------
 
-fn build_registry(out: Arc<Mutex<Vec<Value>>>) -> ActorRegistry {
+fn build_registry(out: Arc<Mutex<Vec<Message>>>) -> ActorRegistry {
   let mut reg = ActorRegistry::new();
   reg.register::<Passthrough, Value, _>("passthrough", |_| Passthrough);
   reg.register::<Doubler, Value, _>("doubler", |_| Doubler);
@@ -159,12 +160,19 @@ async fn passthrough_smoke() {
   let orchestrator = Orchestrator::new(Arc::new(registry));
   let handle = orchestrator.start(&graph).unwrap();
 
-  handle.send(json!(42)).await.unwrap();
-  handle.send(json!("hello")).await.unwrap();
+  handle.send(Message::json("test", json!(42))).await.unwrap();
+  handle
+    .send(Message::json("test", json!("hello")))
+    .await
+    .unwrap();
 
   let results = handle.join().await;
   assert_all_ok(&results);
-  assert_eq!(*out.lock().unwrap(), vec![json!(42), json!("hello")]);
+
+  let recorded = out.lock().unwrap();
+  assert_eq!(recorded.len(), 2);
+  assert!(matches!(&recorded[0].value, MessageValue::Json(v) if *v == json!(42)));
+  assert!(matches!(&recorded[1].value, MessageValue::Json(v) if *v == json!("hello")));
 }
 
 #[tokio::test]
@@ -185,12 +193,16 @@ async fn transform_chain() {
   let orchestrator = Orchestrator::new(Arc::new(registry));
   let handle = orchestrator.start(&graph).unwrap();
 
-  handle.send(json!(5)).await.unwrap();
-  handle.send(json!(3)).await.unwrap();
+  handle.send(Message::json("test", json!(5))).await.unwrap();
+  handle.send(Message::json("test", json!(3))).await.unwrap();
 
   let results = handle.join().await;
   assert_all_ok(&results);
-  assert_eq!(*out.lock().unwrap(), vec![json!(20.0), json!(12.0)]);
+
+  let recorded = out.lock().unwrap();
+  assert_eq!(recorded.len(), 2);
+  assert!(matches!(&recorded[0].value, MessageValue::Json(v) if *v == json!(20.0)));
+  assert!(matches!(&recorded[1].value, MessageValue::Json(v) if *v == json!(12.0)));
 }
 
 #[tokio::test]
@@ -222,12 +234,13 @@ async fn fan_out() {
   let orchestrator = Orchestrator::new(Arc::new(registry));
   let handle = orchestrator.start(&graph).unwrap();
 
-  handle.send(json!(7)).await.unwrap();
+  handle.send(Message::json("test", json!(7))).await.unwrap();
 
   let results = handle.join().await;
   assert_all_ok(&results);
-  assert_eq!(*out_a.lock().unwrap(), vec![json!(14.0)]);
-  assert_eq!(*out_b.lock().unwrap(), vec![json!(14.0)]);
+
+  assert!(matches!(&out_a.lock().unwrap()[0].value, MessageValue::Json(v) if *v == json!(14.0)));
+  assert!(matches!(&out_b.lock().unwrap()[0].value, MessageValue::Json(v) if *v == json!(14.0)));
 }
 
 #[tokio::test]
@@ -254,16 +267,22 @@ async fn fan_in_merge() {
   let orchestrator = Orchestrator::new(Arc::new(registry));
   let handle = orchestrator.start(&graph).unwrap();
 
-  handle.send(json!(1)).await.unwrap();
-  handle.send(json!(2)).await.unwrap();
+  handle.send(Message::json("test", json!(1))).await.unwrap();
+  handle.send(Message::json("test", json!(2))).await.unwrap();
 
   let results = handle.join().await;
   assert_all_ok(&results);
 
   let recorded = out.lock().unwrap();
   assert_eq!(recorded.len(), 4, "got {recorded:?}");
-  let c1 = recorded.iter().filter(|v| **v == json!(1)).count();
-  let c2 = recorded.iter().filter(|v| **v == json!(2)).count();
+  let c1 = recorded
+    .iter()
+    .filter(|m| matches!(&m.value, MessageValue::Json(v) if *v == json!(1)))
+    .count();
+  let c2 = recorded
+    .iter()
+    .filter(|m| matches!(&m.value, MessageValue::Json(v) if *v == json!(2)))
+    .count();
   assert_eq!(c1, 2);
   assert_eq!(c2, 2);
 }
@@ -285,17 +304,21 @@ async fn debounce_collapses_burst() {
   let orchestrator = Orchestrator::new(Arc::new(registry));
   let handle = orchestrator.start(&graph).unwrap();
 
-  handle.send(json!(1)).await.unwrap();
-  handle.send(json!(2)).await.unwrap();
-  handle.send(json!(3)).await.unwrap();
+  handle.send(Message::json("test", json!(1))).await.unwrap();
+  handle.send(Message::json("test", json!(2))).await.unwrap();
+  handle.send(Message::json("test", json!(3))).await.unwrap();
   tokio::time::sleep(Duration::from_millis(120)).await;
 
-  handle.send(json!(99)).await.unwrap();
+  handle.send(Message::json("test", json!(99))).await.unwrap();
   tokio::time::sleep(Duration::from_millis(120)).await;
 
   let results = handle.join().await;
   assert_all_ok(&results);
-  assert_eq!(*out.lock().unwrap(), vec![json!(3), json!(99)]);
+
+  let recorded = out.lock().unwrap();
+  assert_eq!(recorded.len(), 2);
+  assert!(matches!(&recorded[0].value, MessageValue::Json(v) if *v == json!(3)));
+  assert!(matches!(&recorded[1].value, MessageValue::Json(v) if *v == json!(99)));
 }
 
 #[tokio::test]
@@ -315,7 +338,7 @@ async fn cancellation_exits_cleanly() {
   let orchestrator = Orchestrator::new(Arc::new(registry));
   let handle = orchestrator.start(&graph).unwrap();
 
-  handle.send(json!(1)).await.unwrap();
+  handle.send(Message::json("test", json!(1))).await.unwrap();
   tokio::time::sleep(Duration::from_millis(20)).await;
   handle.cancel();
 

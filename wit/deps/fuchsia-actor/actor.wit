@@ -4,6 +4,8 @@ package fuchsia:actor@0.1.0;
 /// in order: `setup` once before the message loop, `handle` per inbound
 /// message, `teardown` once on cancellation before the store is dropped.
 interface actor {
+  use types.{payload};
+
   record context {
     execution-id: string,
     node-id: string,
@@ -17,7 +19,7 @@ interface actor {
   /// Per-message handler. Runs once per inbox delivery. Emissions to
   /// downstream actors are pushed via the host-imported `emit` interface,
   /// not returned from this function.
-  handle: func(ctx: context, message: string) -> result<_, string>;
+  handle: func(ctx: context, msg: payload) -> result<_, string>;
 
   /// One-time teardown. Runs on cancellation or inbox close before the
   /// store is dropped. Use this to close connections, send shutdown
