@@ -5,6 +5,8 @@ members = [
   "crates/fuchsia-transport",
   "crates/fuchsia-runtime",
   "crates/fuchsia-actor-builtins",
+  "crates/fuchsia-actor-wasm",
+  "crates/fuchsia-actor-lua",
   "crates/fuchsia-engine",
   "crates/fuchsia-workflow",
   "crates/fuchsia-provisioner",

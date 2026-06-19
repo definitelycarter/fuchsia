@@ -1,0 +1,32 @@
+# Standalone workspace: kept out of the parent cargo workspace so its wasm
+# target and cargo-component build don't enter `cargo build --workspace`.
+[workspace]
+
+[package]
+name = "actor-echo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Workspace-excluded: this crate compiles to a wasm component via
+# `cargo component build --release`, not as part of `cargo build --workspace`.
+# The `fuchsia-actor-wasm` integration test loads the built artifact.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen-rt = { version = "0.41", features = ["bitflags"] }
+
+[package.metadata.component]
+package = "fuchsia:actor-echo"
+
+[package.metadata.component.target]
+path = "wit"
+world = "test-actor"
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+strip = true
+lto = true

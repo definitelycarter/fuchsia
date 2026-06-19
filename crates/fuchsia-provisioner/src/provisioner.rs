@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorId};
 use fuchsia_engine::Engine;
-use fuchsia_workflow::store::{NodeDefinition, Workflow, WorkflowId};
+use fuchsia_workflow::store::{NodeDefinition, Runtime, Workflow, WorkflowId};
 
 use crate::error::ProvisionerError;
 
@@ -38,15 +38,28 @@ fn plan(workflow: &Workflow) -> GraphSpec {
             settings: b.settings.clone(),
           },
         ),
-        // ComponentConfig has no `env` field yet (provisional shape); pass an
-        // empty environment until it grows one.
-        NodeDefinition::Component(c) => (
-          c.component.clone(),
-          ActorConfig {
-            env: BTreeMap::new(),
-            settings: c.settings.clone(),
-          },
-        ),
+        // A component node resolves to a per-runtime creator (`"wasm"`/`"lua"`),
+        // not a creator-per-component: the runtime is the registered type, and
+        // the specific component to load rides in `env` under the reserved
+        // key so the guest creator can resolve it from its catalog.
+        NodeDefinition::Component(c) => {
+          let type_name = match c.runtime {
+            Runtime::Wasm => "wasm",
+            Runtime::Lua => "lua",
+          };
+          let mut env = BTreeMap::new();
+          env.insert(
+            fuchsia_actor::COMPONENT_ENV_KEY.to_owned(),
+            c.component.clone(),
+          );
+          (
+            type_name.to_owned(),
+            ActorConfig {
+              env,
+              settings: c.settings.clone(),
+            },
+          )
+        }
       };
       (
         ActorId::scoped(group.as_str(), node.id.0.as_str()),
@@ -119,7 +132,9 @@ impl Provisioner {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use fuchsia_workflow::store::{BuiltinConfig, Edge, Node, NodeId, Workflow, WorkflowId};
+  use fuchsia_workflow::store::{
+    BuiltinConfig, ComponentConfig, Edge, Node, NodeId, Runtime, Workflow, WorkflowId,
+  };
 
   fn builtin_node(id: &str, name: &str) -> Node {
     Node {
@@ -127,6 +142,18 @@ mod tests {
       definition: NodeDefinition::Builtin(BuiltinConfig {
         name: name.to_owned(),
         env: Default::default(),
+        settings: Default::default(),
+      }),
+      trigger: None,
+    }
+  }
+
+  fn component_node(id: &str, runtime: Runtime, component: &str) -> Node {
+    Node {
+      id: NodeId(id.to_owned()),
+      definition: NodeDefinition::Component(ComponentConfig {
+        runtime,
+        component: component.to_owned(),
         settings: Default::default(),
       }),
       trigger: None,
@@ -175,6 +202,57 @@ mod tests {
         ActorId::scoped(group.as_str(), "a"),
         ActorId::scoped(group.as_str(), "b"),
       )]
+    );
+  }
+
+  #[test]
+  fn plan_routes_component_nodes_by_runtime_with_component_in_env() {
+    let workflow = Workflow {
+      id: WorkflowId::new(),
+      name: "components".to_owned(),
+      nodes: vec![
+        component_node("w", Runtime::Wasm, "sensor-filter"),
+        component_node("l", Runtime::Lua, "rename-fields"),
+      ],
+      edges: vec![],
+      created_at: 0,
+      updated_at: 0,
+    };
+    let group = workflow.id.to_string();
+
+    let spec = plan(&workflow);
+
+    let wasm_env = {
+      let mut e = BTreeMap::new();
+      e.insert("component".to_owned(), "sensor-filter".to_owned());
+      e
+    };
+    let lua_env = {
+      let mut e = BTreeMap::new();
+      e.insert("component".to_owned(), "rename-fields".to_owned());
+      e
+    };
+
+    assert_eq!(
+      spec.nodes,
+      vec![
+        (
+          ActorId::scoped(group.as_str(), "w"),
+          "wasm".to_owned(),
+          ActorConfig {
+            env: wasm_env,
+            settings: Default::default(),
+          },
+        ),
+        (
+          ActorId::scoped(group.as_str(), "l"),
+          "lua".to_owned(),
+          ActorConfig {
+            env: lua_env,
+            settings: Default::default(),
+          },
+        ),
+      ]
     );
   }
 }

@@ -1,0 +1,15 @@
+[package]
+name = "fuchsia-actor-wasm"
+version.workspace = true
+edition.workspace = true
+description = "Wasm-component-hosting Actor implementation for fuchsia"
+
+[dependencies]
+fuchsia-actor = { path = "../fuchsia-actor" }
+serde_json = "1"
+tracing = "0.1"
+wasmtime = { version = "45", features = ["component-model"] }
+
+[dev-dependencies]
+fuchsia-engine = { path = "../fuchsia-engine" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

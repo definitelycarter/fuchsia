@@ -1,0 +1,58 @@
+// Self-contained WIT for the `actor-echo` test component. The canonical
+// `fuchsia:actor` interfaces are inlined here as a nested package (rather than
+// pulled from `wit/deps`) to keep the component buildable with a bare
+// `cargo component build` and no dependency fetching.
+
+package fuchsia:actor-echo@0.1.0;
+
+/// Minimal actor world for the `fuchsia-actor-wasm` integration test: it
+/// exports the canonical `fuchsia:actor` lifecycle and imports nothing beyond
+/// `emit`. No platform capabilities (no log/http/wasi) — proving the base host
+/// only needs to satisfy the `fuchsia:actor` contract.
+world test-actor {
+  import fuchsia:actor/emit@0.1.0;
+  export fuchsia:actor/actor@0.1.0;
+}
+
+package fuchsia:actor@0.1.0 {
+  /// Shared payload types imported by both the actor lifecycle and the emit
+  /// interface.
+  interface types {
+    /// Payload value: typed JSON string, raw bytes, or empty.
+    variant payload-value {
+      json(string),
+      binary(list<u8>),
+      empty,
+    }
+
+    /// Typed message payload. `%type` is the event discriminator; `value`
+    /// carries the data.
+    record payload {
+      %type: string,
+      value: payload-value,
+    }
+  }
+
+  /// Host-provided emit interface. Components call `send` to push a typed
+  /// payload to downstream actors.
+  interface emit {
+    use types.{payload};
+
+    send: func(msg: payload) -> result<_, string>;
+  }
+
+  /// Lifecycle interface that actor components export.
+  interface actor {
+    use types.{payload};
+
+    record context {
+      execution-id: string,
+      node-id: string,
+      task-id: string,
+    }
+
+    setup: func(ctx: context) -> result<_, string>;
+    handle: func(ctx: context, msg: payload) -> result<_, string>;
+    teardown: func(ctx: context) -> result<_, string>;
+  }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "fuchsia-actor-lua"
+version.workspace = true
+edition.workspace = true
+description = "Lua-script-hosting Actor implementation for fuchsia"
+
+[dependencies]
+fuchsia-actor = { path = "../fuchsia-actor" }
+# Pinned to 0.11 to match slate-vm (pulled in transitively via fuchsia-workflow);
+# `mlua` links the native `lua` lib, so the whole graph must agree on one version.
+mlua = { version = "0.11", features = ["lua54", "send", "vendored"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+fuchsia-engine = { path = "../fuchsia-engine" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

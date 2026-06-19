@@ -12,8 +12,8 @@ use crate::from_settings;
 /// Self-scheduled timer types. Real input never carries these, so they're safe
 /// to distinguish from a value. `FIRE` carries the input `generation`; `MAXWAIT`
 /// carries the pending-`period`.
-const FIRE: &str = "libra/debounce/fire";
-const MAXWAIT: &str = "libra/debounce/maxwait";
+const FIRE: &str = "fuchsia/debounce/fire";
+const MAXWAIT: &str = "fuchsia/debounce/maxwait";
 
 #[derive(Debug, Deserialize)]
 struct DebounceConfig {

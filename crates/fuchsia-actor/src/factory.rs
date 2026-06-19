@@ -5,6 +5,16 @@ use bson::Document;
 use crate::actor::{Actor, ActorCapabilities};
 use crate::error::ActorError;
 
+/// Reserved [`ActorConfig::env`] key under which a per-runtime guest creator
+/// (wasm/lua) finds the identity of the component/script to load.
+///
+/// A guest runtime registers *one* creator per runtime kind (e.g. `"wasm"`,
+/// `"lua"`), not one per component; the specific component a node runs is named
+/// here. It lives in `env` (host-curated) rather than `settings` (guest-opaque)
+/// because the *host* — the creator — resolves it, never the guest. The
+/// provisioner writes a `Component` node's identifier here; the creator reads it.
+pub const COMPONENT_ENV_KEY: &str = "component";
+
 /// Per-instance configuration handed to an actor at construction, split by
 /// *who consumes it*:
 ///
