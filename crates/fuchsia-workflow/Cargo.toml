@@ -1,0 +1,17 @@
+[package]
+name = "fuchsia-workflow"
+version.workspace = true
+edition.workspace = true
+description = "Workflow definitions (node graph) and Slate-backed storage for fuchsia"
+
+[dependencies]
+slate-db.workspace    = true
+slate-store.workspace = true
+slate-query.workspace = true
+
+bson      = { version = "3", features = ["serde"] }
+serde     = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+slate-store = { workspace = true, features = ["memory"] }

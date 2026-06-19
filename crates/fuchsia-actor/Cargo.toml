@@ -1,13 +1,10 @@
 [package]
 name = "fuchsia-actor"
-edition.workspace = true
 version.workspace = true
-description = "Actor trait, channels, and context — the API surface for actor authors"
+edition.workspace = true
+description = "Actor trait, message types, and factory registry for fuchsia"
 
 [dependencies]
-async-trait = "0.1"
+bson       = { version = "3", features = ["serde"] }
 serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["sync"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
+thiserror  = "2"

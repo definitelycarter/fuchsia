@@ -1,0 +1,13 @@
+[package]
+name = "fuchsia-transport"
+version.workspace = true
+edition.workspace = true
+description = "Message delivery plumbing (Delivery, Ack, mailbox channel) for fuchsia"
+
+[dependencies]
+fuchsia-actor = { path = "../fuchsia-actor" }
+tokio       = { version = "1", features = ["sync"] }
+tracing     = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

@@ -1,0 +1,19 @@
+[package]
+name = "fuchsia-engine"
+version.workspace = true
+edition.workspace = true
+description = "Workflow engine for fuchsia: routes emissions between actors per a graph's edges"
+
+[dependencies]
+fuchsia-actor     = { path = "../fuchsia-actor" }
+fuchsia-runtime   = { path = "../fuchsia-runtime" }
+fuchsia-transport = { path = "../fuchsia-transport" }
+
+thiserror = "2"
+tokio     = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+fuchsia-actor-builtins = { path = "../fuchsia-actor-builtins" }
+tokio                = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tracing              = "0.1"
+tracing-subscriber   = "0.3"

@@ -1,22 +1,17 @@
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum ActorError {
-  #[error("unknown actor: {0}")]
-  UnknownActor(String),
-
-  #[error("unknown node referenced by graph: {0}")]
-  UnknownNode(String),
-
-  #[error("failed to deserialize actor config: {0}")]
-  Config(#[from] serde_json::Error),
-
-  #[error("channel send failed: {0}")]
-  Send(String),
-
-  #[error("actor task panicked")]
-  Panic,
-
-  #[error("{0}")]
-  Other(String),
+  #[error("setup failed: {0}")]
+  Setup(String),
+  #[error("handle failed: {0}")]
+  Handle(String),
+  #[error("teardown failed: {0}")]
+  Teardown(String),
+  #[error("unknown actor type: {0}")]
+  UnknownType(String),
+  #[error("invalid config: {0}")]
+  Config(String),
+  #[error("state write failed: {0}")]
+  StateWrite(String),
 }

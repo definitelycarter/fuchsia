@@ -1,0 +1,16 @@
+[package]
+name = "fuchsia-provisioner"
+version.workspace = true
+edition.workspace = true
+description = "Translates workflow definitions into running engine graphs for fuchsia"
+
+[dependencies]
+fuchsia-actor    = { path = "../fuchsia-actor" }
+fuchsia-engine   = { path = "../fuchsia-engine" }
+fuchsia-workflow = { path = "../fuchsia-workflow" }
+
+thiserror = "2"
+
+[dev-dependencies]
+fuchsia-actor-builtins = { path = "../fuchsia-actor-builtins" }
+tokio                = { version = "1", features = ["rt", "macros", "sync", "time"] }

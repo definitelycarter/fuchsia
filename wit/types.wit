@@ -1,0 +1,20 @@
+package fuchsia:actor@0.1.0;
+
+/// Shared payload types imported by both the actor lifecycle and the emit
+/// interface. Keeping these in a dedicated interface avoids cross-direction
+/// type sharing (exported actor ↔ imported emit) which confuses WIT tooling.
+interface types {
+  /// Payload value: typed JSON string, raw bytes, or empty.
+  variant payload-value {
+    json(string),
+    binary(list<u8>),
+    empty,
+  }
+
+  /// Typed message payload. `%type` is the event discriminator (e.g.
+  /// "gatt/2a6e", "timer_tick"); `value` carries the data.
+  record payload {
+    %type: string,
+    value: payload-value,
+  }
+}

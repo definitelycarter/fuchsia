@@ -1,26 +1,20 @@
 [package]
 name = "fuchsia-runtime"
-edition.workspace = true
 version.workspace = true
-description = "Actor runtime: registry, graph, and orchestrator built on fuchsia-actor"
+edition.workspace = true
+description = "Actor lifecycle runtime for fuchsia"
 
 [dependencies]
-fuchsia-actor = { path = "../fuchsia-actor" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
+fuchsia-actor     = { path = "../fuchsia-actor" }
+fuchsia-transport = { path = "../fuchsia-transport" }
+thiserror       = "2"
+tokio           = { version = "1", features = ["rt", "sync", "macros", "time"] }
+tracing         = "0.1"
 
 [dev-dependencies]
-async-trait = "0.1"
-criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
-tokio = { version = "1", features = ["full", "test-util"] }
+criterion  = { version = "0.5", features = ["html_reports"] }
+serde_json = "1"
 
 [[bench]]
-name = "chain_throughput"
-harness = false
-
-[[bench]]
-name = "fan_out"
+name    = "runtime"
 harness = false
