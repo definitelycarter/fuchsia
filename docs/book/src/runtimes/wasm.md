@@ -1,224 +1,181 @@
 # WebAssembly Actors
 
-`fuchsia-actor-wasm` hosts WebAssembly components as Fuchsia actors. Each
-`WasmActor` wraps a compiled wasm component. When the actor starts, the
-runtime builds one `wasmtime::Store`, instantiates the component into it,
-and drives the component's lifecycle: `setup` once, `handle` per inbound
-message, `teardown` once on shutdown. The store persists for the actor's
-lifetime — connections, subscriptions, and capability handles opened in
-`setup` stay live across every `handle` call.
+`fuchsia-actor-wasm` hosts WebAssembly components as Fuchsia actors. A
+`WasmActor<H>` drives a component's `fuchsia:actor` lifecycle on the
+handle-per-message model: the runtime owns the receive loop and calls the
+actor's synchronous `setup` / `handle` / `teardown`, each of which trampolines
+into the component. One `wasmtime::Store` is built per actor in `setup` and
+reused for every `handle` — connections and state opened in the component's
+`setup` stay live across messages, until `teardown`.
 
-## Anatomy
+## Synchronous by design
 
-```rust
-pub struct WasmActor<H: WasmHost> {
-    engine: Engine,                    // shared, cheap to clone (Arc)
-    component: Component,              // compiled, cheap to clone (Arc)
-    linker: Arc<Linker<H::State>>,     // built once at build() time
-    host: Arc<H>,                      // shared
-    epoch_deadline: u64,
-}
-```
+The `fuchsia:actor` contract — lifecycle plus the host-imported `emit` — is
+entirely synchronous (`emit` is a non-blocking channel `offer`). So this crate
+uses **synchronous** wasmtime: no `async_support`, no `block_on`, no fibers. A
+component call runs to completion on the runtime task driving it, exactly like a
+native actor's `handle`. Capabilities that are inherently async (HTTP, …) are
+*not* part of this contract — a product host wires them into its own `WasmHost`
+and decides how to bridge (see [Host Extensibility](../architecture/host-extensibility.md)).
 
-`WasmActor: Clone` is cheap — every field is either `Arc`-backed
-internally or wrapped in `Arc`. Each clone produces an independent actor
-that builds its own store when started, so the `ActorRegistry` factory
-closure can hand back fresh actors per registered node.
+## Generic over the import set
 
-## Builder
-
-```rust
-use fuchsia_actor_wasm::{WasmActor, DefaultHost};
-use fuchsia_capabilities::http::{ReqwestHttp, AllowedHosts};
-
-let engine = build_wasmtime_engine();  // shared across all actors
-let http = Arc::new(ReqwestHttp::new(AllowedHosts::new(["api.example.com"])));
-let host = DefaultHost::new(http);
-
-let actor = WasmActor::builder(engine, host)
-    .component_from_path("plugins/temp-mapper.wasm")
-    .epoch_deadline(1_000_000)
-    .build()?;
-```
-
-The builder takes three things:
-
-- An `Engine` (one per process is typical; `Engine::clone` is an `Arc`
-  bump)
-- A `WasmHost` — `DefaultHost` for the canonical world, or a custom host
-  for richer capabilities (see [Host Extensibility](../architecture/host-extensibility.md))
-- A component source — `component(Component)`, `component_from_path(path)`,
-  or `component_from_bytes(Vec<u8>)`
-
-Build the engine with:
+fuchsia owns only the `fuchsia:actor` contract; it does not prescribe which
+capabilities a component may import. `WasmActor` is generic over
+[`WasmHost`](../architecture/host-extensibility.md) — the seam a product
+implements to wire its own world's imports. The crate ships **`BaseHost`**,
+which satisfies nothing but the contract: it links `emit` and traps any other
+import the component carries.
 
 ```rust
-let mut config = wasmtime::Config::new();
-config.async_support(true);
-config.wasm_component_model(true);
-let engine = wasmtime::Engine::new(&config)?;
+pub struct WasmActor<H: WasmHost> { /* engine, component, host, emit, store, bindings */ }
 ```
 
-`build()` does the expensive setup *once* — compiles the component if
-needed, then constructs the `Linker` against the host's `add_to_linker`.
-At actor startup the linker is reused; the cost of wiring imports is paid
-up-front, not per actor.
+The engine, component, host, and emit handle are captured when the actor is
+built; the `Store` and bindings are created in `setup` and reused thereafter.
+
+## The creator: one per runtime
+
+A `WasmActorCreator<H>` is registered once under the type name `"wasm"`, not once
+per component. It owns a catalog of compiled components keyed by id; each
+`create` reads the component id from `ActorConfig.env` (under `COMPONENT_ENV_KEY`,
+`"component"`) and builds an actor wired to the caller-supplied `emit`.
+
+```rust
+use fuchsia_actor_wasm::{BaseHost, WasmActorCreator};
+
+let creator = WasmActorCreator::new(BaseHost::new())?     // builds a component-model Engine
+    .with_path("temp-mapper", "components/temp-mapper.wasm")?;
+
+engine.register("wasm", creator).await;
+```
+
+- `new(host)` builds a component-model `Engine`; `with_engine(engine, host)`
+  shares one engine across creators or applies a custom `Config` (fuel, epochs).
+- `with_path` / `with_bytes` (and the `insert_*` mutating forms) compile a
+  component and register it under an id; `insert_component` registers an
+  already-compiled `Component`.
+
+A product swaps `BaseHost` for its own host to expose richer imports — same
+creator, same resolution logic.
 
 ## The contract
 
-Components built against the canonical `actor-component` world export the
-`fuchsia:actor/actor` interface and import `fuchsia:actor/emit`:
+Components target a world that exports `fuchsia:actor/actor` and imports
+`fuchsia:actor/emit`. The canonical interfaces (in `wit/`):
 
 ```wit
+// fuchsia:actor — types.wit
 interface types {
-  record payload {
-    %type: string,
-    correlation-id: option<string>,
-    value: list<u8>,
-  }
+  variant payload-value { json(string), binary(list<u8>), empty }
+  record payload { %type: string, value: payload-value }
 }
 
+// actor.wit
 interface actor {
   use types.{payload};
-
-  record context {
-    execution-id: string,
-    node-id: string,
-    task-id: string,
-  }
-
+  record context { execution-id: string, node-id: string, task-id: string }
   setup:    func(ctx: context) -> result<_, string>;
   handle:   func(ctx: context, msg: payload) -> result<_, string>;
   teardown: func(ctx: context) -> result<_, string>;
 }
 
+// emit.wit
 interface emit {
   use types.{payload};
   send: func(msg: payload) -> result<_, string>;
 }
 ```
 
-All three lifecycle exports are required. Stateless components implement
-`setup` and `teardown` as no-ops returning `Ok(())`. Inbound messages are
-`payload` values: a `%type` discriminator, an optional `correlation-id`
-for tracing, and raw bytes in `value` (encoding convention is set by
-`%type`). Outbound emissions flow through the host-imported `emit.send`,
-not through `handle`'s return value — `handle` returns `Ok(())` once it's
-done processing.
+All three lifecycle exports are required; stateless components make `setup` /
+`teardown` no-ops returning `Ok(())`. The `payload` value mirrors `MessageValue`
+exactly — `json(string)` / `binary(list<u8>)` / `empty`. Outbound emissions go
+through the host-imported `emit.send`, **not** through `handle`'s return value;
+`handle` returns `Ok(())` once it's done.
 
-A component built with `wit-bindgen` (e.g., via `cargo-component`) ends up
-writing something like:
+`wit/` ships only `fuchsia:actor` — there is **no bundled platform world**. A
+component's world is the product's (or, for a contract-only component, a tiny
+world that just re-exports `actor` and imports `emit`).
+
+### A component, with `cargo-component`
 
 ```rust
-impl exports::fuchsia::actor::actor::Guest for MyComponent {
-  fn setup(ctx: exports::fuchsia::actor::actor::Context) -> Result<(), String> {
-    fuchsia::log::log::log(fuchsia::log::log::Level::Info,
-      &format!("setup node {}", ctx.node_id));
-    Ok(())
-  }
+use bindings::exports::fuchsia::actor::actor::{Context, Guest, Payload};
+use bindings::fuchsia::actor::emit;
+use bindings::fuchsia::actor::types::PayloadValue;
 
-  fn handle(
-    ctx: exports::fuchsia::actor::actor::Context,
-    msg: fuchsia::actor::types::Payload,
-  ) -> Result<(), String> {
-    // msg.type_ is the event discriminator; msg.value is raw bytes
-    // encoding is established by convention on msg.type_
-    let output = transform(&msg.value);
-    fuchsia::actor::emit::send(&fuchsia::actor::types::Payload {
-      type_: "result".to_string(),
-      correlation_id: msg.correlation_id,
-      value: output,
-    })
-  }
+struct Component;
 
-  fn teardown(_ctx: exports::fuchsia::actor::actor::Context) -> Result<(), String> {
-    Ok(())
-  }
+impl Guest for Component {
+    fn setup(_ctx: Context) -> Result<(), String> { Ok(()) }
+
+    fn handle(ctx: Context, msg: Payload) -> Result<(), String> {
+        let inner = match msg.value {
+            PayloadValue::Json(s)   => s,
+            PayloadValue::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+            PayloadValue::Empty     => "null".into(),
+        };
+        let body = format!("{{\"echoed\": {inner}, \"node\": \"{}\"}}", ctx.node_id);
+        emit::send(&Payload { type_: "echo".into(), value: PayloadValue::Binary(body.into_bytes()) })
+    }
+
+    fn teardown(_ctx: Context) -> Result<(), String> { Ok(()) }
 }
-```
 
-The `actor-component` world also imports `fuchsia:log/log` and
-`fuchsia:http/outbound`, both of which `DefaultHost` provides.
+bindings::export!(Component with_types_in bindings);
+```
 
 ## Actor lifecycle
 
-When the orchestrator spawns the actor:
+When the runtime builds and starts the actor:
 
-1. `Store<H::State>` is created via `host.initial_state(emitter)`. The
-   `Emitter` is stashed in the state so the `emit` import callback can
-   reach it.
-2. The component is instantiated into the store via the pre-built
-   `Linker`. This happens *once*; the bindings are reused for every
-   subsequent lifecycle call.
-3. `actor.setup(ctx)` is invoked. Use this to open connections, subscribe
-   to streams, or perform discovery.
-4. For each inbound message: the actor converts the inbox `Message` to a
-   WIT `payload` and calls `actor.handle(ctx, msg)`. The component pushes
-   any outgoing payloads via `emit::send` during the handle call.
-5. On cancellation or inbox close, `actor.teardown(ctx)` is invoked
-   before the store is dropped — long-lived resources (BLE handles, MQTT
-   sessions) get a chance to close cleanly.
+1. A `Linker` is prepared. If `trap_unknown_imports()` is on (the default), every
+   component import is first defined as a trap on the empty linker, then the host
+   wires the real `emit`/contract imports on top (shadowing) — so unused WASI a
+   guest drags in instantiates fine, while *calling* an unwired import fails
+   loudly, and a real import is never clobbered by a trap.
+2. `Store<H::State>` is created via `host.initial_state(emit)`, stashing the emit
+   sink where the `emit` import callback can reach it.
+3. The component is instantiated into the store once; the bindings are reused for
+   every lifecycle call.
+4. `setup(ctx)` runs (synchronously, inside the runtime's spawn).
+5. Per message: the `Message` is converted to a WIT `payload` and `handle(ctx,
+   msg)` is called; the component pushes emissions via `emit::send` during it.
+6. On mailbox close, `teardown(ctx)` runs before the store is dropped. Teardown
+   errors are logged, not propagated.
 
-If anything fails — instantiation, a setup/handle trap, the component
-returns an `Err(...)`, output JSON is malformed — the actor's `run` loop
-records the error, runs teardown best-effort (logging any errors instead
-of propagating), and returns the original error. `WorkflowHandle::join()`
-will surface it in that actor's slot.
+A `handle` call runs to completion — it isn't interrupted mid-flight. For hard
+deadlines, build the creator's engine with epochs/fuel and a ticker.
 
-Cancellation is checked between `handle` invocations, not during. A
-long-running `handle` call cannot be interrupted mid-flight; once it
-returns, the runtime exits the loop and runs teardown. Wire up
-`epoch_deadline` plus an epoch ticker if you need hard deadlines on
-in-flight calls.
+## `BaseHost`
 
-## What `DefaultHost` gives you
+`BaseHost` wires only the `fuchsia:actor` contract: it links `emit` (forwarding
+the component's emissions into the actor's `Emit` sink) and traps everything
+else. It deliberately provides no log/http/WASI — those belong to product hosts.
+It's enough to run any component that imports only `fuchsia:actor`. For richer
+capabilities, implement your own `WasmHost`.
 
-The off-the-shelf `DefaultHost` targets the canonical
-`fuchsia:platform/actor-component` world. It satisfies:
+## Building a test component
 
-- `fuchsia:log/log` — routes calls to `tracing` under target
-  `"wasm.component"`. The actor's tokio task is already wrapped in a span
-  carrying the `node` id, so log events automatically pick up context.
-- `fuchsia:http/outbound` — delegates to the injected `HttpClient`.
-- `fuchsia:actor/emit` — forwards typed payloads to the actor's outbound
-  channel. Returns `Err("channel closed")` to the component if every
-  downstream is gone; the component typically propagates that out of
-  `handle`, which ends the actor cleanly.
-
-WIT imports run as async host functions, so the bindings can await
-directly on the underlying `HttpClient` and `Emitter::send` futures
-without blocking the wasmtime worker.
-
-For custom capabilities (MQTT, BLE, anything domain-specific), implement
-your own `WasmHost` — see [Host Extensibility](../architecture/host-extensibility.md).
-
-## Building test components
-
-The integration test for `fuchsia-actor-wasm` needs a compiled component
-on disk. Build it with [`cargo-component`]:
+The integration test loads a compiled component from disk; build it first with
+[`cargo-component`]:
 
 ```bash
-cd test-components/test-actor-component
-cargo component build --release
+cd test-components/actor-echo && cargo component build --release
 ```
 
-This produces `target/wasm32-wasip1/release/test_actor_component.wasm`,
-which the test loads via `component_from_path`.
+This produces `target/wasm32-wasip1/release/actor_echo.wasm`, which the test
+registers via `WasmActorCreator::with_path`. The test
+(`crates/fuchsia-actor-wasm/tests/wasm_actor.rs`) **skips** if the artifact is
+absent, so `cargo test --workspace` stays green without the wasm toolchain step.
 
 [`cargo-component`]: https://github.com/bytecodealliance/cargo-component
 
 ## Performance notes
 
-- **Component compilation is the expensive step.** Done once at
-  `builder.build()` time.
-- **Instantiation is once per actor**, not per message. With a persistent
-  store, the cost of bringing up a wasm instance is amortized across the
-  actor's lifetime.
-- **Linker is built once** at `build()` and reused across all actor
-  instances of this `WasmActor`.
-- **`Engine::clone`** is an `Arc` bump; one engine for the whole process
-  is the recommended shape.
-- **No component caching across actors.** Each `WasmActor` instance
-  holds its own `Component`. If you want shared compilation across many
-  registered actor names, compile once and pass the `Component` directly
-  into multiple builders.
+- **Compilation is the expensive step** — done once when a component is inserted
+  into the creator's catalog.
+- **Instantiation is once per actor**, in `setup`, not per message.
+- **`Engine` / `Component` clones are `Arc` bumps** — one engine per process (or
+  per creator) is the recommended shape; share a `Component` across catalog
+  entries if several ids back the same artifact.

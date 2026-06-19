@@ -1,123 +1,140 @@
 # Overview
 
-Fuchsia is composed of five crates that fit together as follows:
+Fuchsia is a stack of small crates, each depending only on the layer below it.
+From the bottom up:
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│                       Host application                       │
-│                                                              │
-│  - builds an ActorRegistry (own + Wasm + Lua actors)         │
-│  - loads or composes a Graph                                 │
-│  - calls Orchestrator::start(&graph)                         │
-│  - pushes messages, joins, observes via tracing              │
-└────────────────────────┬─────────────────────────────────────┘
-                         │
-                         │ uses
-                         ▼
-┌──────────────────────────────────────────────────────────────┐
-│ fuchsia-runtime: Graph · ActorRegistry · Orchestrator        │
-│                                                              │
-│   spawns one tokio task per node,                            │
-│   wires bounded mpsc channels per edge                       │
-└────────────────────────┬─────────────────────────────────────┘
-                         │
-                         │ delivers messages to
-                         ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Actors (everything below implements fuchsia_actor::Actor)    │
-│                                                              │
-│  ┌─────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
-│  │ native Rust │  │ fuchsia-actor-wasm│  │ fuchsia-actor-lua│  │
-│  │ (your code) │  │  (WasmActor<H>)  │  │   (LuaActor<H>) │  │
-│  └─────────────┘  └────────┬─────────┘  └────────┬────────┘  │
-│                            │                     │           │
-│                  ┌─────────▼──┐         ┌────────▼─────────┐ │
-│                  │ WasmHost   │         │  LuaHost         │ │
-│                  │ (default   │         │  (default impl   │ │
-│                  │  impl OR   │         │   OR host-       │ │
-│                  │  host-     │         │   specific)      │ │
-│                  │  specific) │         │                  │ │
-│                  └────────────┘         └──────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Host application                                                       │
+│   registers actor creators · provisions graphs · pushes messages      │
+└───────────────────────────────┬────────────────────────────────────────┘
+                                │
+        ┌───────────────────────┴───────────────────────┐
+        ▼                                               ▼
+┌──────────────────────┐                  ┌────────────────────────────────┐
+│ fuchsia-provisioner   │  translates →    │ fuchsia-workflow                │
+│ stored workflow → graph│                  │ persisted Workflow/Node defs    │
+└───────────┬───────────┘                  └────────────────────────────────┘
+            │ drives
+            ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ fuchsia-engine — routing                                              │
+│   Engine: add_node / add_edge / push; routes each emit to the         │
+│   downstream mailboxes per the graph's edges (provides `emit`)        │
+└───────────────────────────────┬────────────────────────────────────────┘
+                                │ spawns / delivers to
+                                ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ fuchsia-runtime — the actor substrate                                 │
+│   owns the recv→handle loop, one tokio task per actor; provides       │
+│   `schedule`. fuchsia-transport supplies the bounded mailbox + ack.   │
+└───────────────────────────────┬────────────────────────────────────────┘
+                                │ drives `Actor`
+                                ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Actors — everything below implements fuchsia_actor::Actor             │
+│  ┌─────────────┐  ┌──────────────────┐  ┌──────────────────┐          │
+│  │ builtins    │  │ fuchsia-actor-wasm│  │ fuchsia-actor-lua │          │
+│  │ (native)    │  │  WasmActor<H>    │  │  LuaActor<H>     │          │
+│  └─────────────┘  └────────┬─────────┘  └────────┬─────────┘          │
+│                            │ WasmHost            │ LuaHost            │
+│                            ▼                     ▼                     │
+│                   product-defined capability imports (or BaseHost)    │
+└──────────────────────────────────────────────────────────────────────┘
 ```
+
+`fuchsia-actor` (not drawn) sits beneath everything — it defines the `Actor`
+trait, the capability bag, the message type, and the creator/registry, and is
+the only crate every other one depends on.
 
 ## The mental model
 
-A **Graph** is a JSON-describable directed graph of nodes. Every node names
-an actor (by string key) and provides per-node configuration. Edges declare
-how outputs flow from one node to the next.
+An **actor** implements [`fuchsia_actor::Actor`](https://docs.rs/fuchsia-actor):
+three synchronous methods over `&mut self` — `setup(ctx)` once, `handle(ctx,
+msg)` per message, `teardown(ctx)` on shutdown. The actor receives a `Message`,
+does work, and `emit`s; it does *not* know who receives its output.
 
-An **Actor** is something that implements
-[`fuchsia_actor::Actor`](https://docs.rs/fuchsia-actor) — a trait with one
-method, `run(inbox, emit, ctx)`. The actor receives messages on the inbox,
-does work, and emits results to the emitter. It does *not* know who
-receives its output; that's the orchestrator's job.
+The runtime owns the loop. There is no `run(inbox, …)` an actor drives itself;
+the runtime pulls one message from the actor's **mailbox**, calls `handle`, and
+reports the outcome to the message's **ack**. This is the *handle-per-message*
+model — per-actor state lives in struct fields, never behind a lock, because
+only the runtime's single task touches a given actor.
 
-The **Orchestrator** is the thing that turns a graph into a running
-workflow. It creates one tokio mpsc channel per node, builds an `Emitter`
-for each actor by cloning the senders of its downstream nodes, spawns one
-tokio task per node, and steps aside. After setup, messages flow through
-the channels without any central scheduler involved.
+An **actor creator** (`ActorCreator::create(config, caps) -> Box<dyn Actor>`)
+builds an actor from its per-instance `ActorConfig` and the `ActorCapabilities`
+granted to it. Creators are registered by **type name**; one creator backs a
+whole kind of node (every `"debounce"` node, every `"wasm"` node).
 
-A **WorkflowHandle** is what the host gets back. It exposes `send(value)`
-for pushing messages into the entry node, `cancel()` for shutdown, and
-`join()` for awaiting completion.
+The **engine** turns nodes and edges into a running graph. `add_node`
+instantiates an actor (through its creator) and registers its mailbox as a
+routable target; `add_edge` records that one node's emissions flow to another's
+mailbox. When an actor emits, the engine looks up that actor's successors in a
+live routing table and delivers to each. `push` injects an external event into
+one entrypoint's mailbox.
+
+A **workflow** is the persisted form of a graph (`fuchsia-workflow`), and the
+**provisioner** translates one into engine `add_node`/`add_edge` calls.
 
 ## Why dataflow, not classic actors
 
-Classic actor models (Hewitt, Erlang, Akka) have actors address each other
-explicitly: `ctx.send(other_actor_pid, message)`. The communication
-topology is encoded in the actor's code.
+Classic actor models (Hewitt, Erlang, Akka) have actors address each other:
+`ctx.send(other_pid, msg)`. The topology is encoded in actor code.
 
-Fuchsia takes the opposite stance: the topology is configuration. Actors
-return values; the graph wires them. This means:
+Fuchsia takes the opposite stance: topology is configuration. Actors emit; the
+graph wires them. So:
 
-- Workflow authors edit JSON, not Rust/Wasm/Lua.
+- Workflow authors edit a graph definition, not Rust/Wasm/Lua.
 - Actors stay decoupled from any particular use case.
-- Routing changes don't require rebuilding actors.
+- Routing changes don't require rebuilding actors — the routing table is
+  mutable, so a graph can be added or torn down without re-instantiating the
+  actors it shares.
 
-You give up the ability to do dynamic routing from inside an actor — but
-you gain a clean separation between "what this code does" and "where its
-output goes." For a workflow engine that's the right trade.
+You give up dynamic routing from inside an actor and gain a clean split between
+"what this code does" and "where its output goes."
 
 ## Three actor flavors, one trait
 
 The same `Actor` trait covers:
 
-1. **Native Rust actors.** Implement the trait directly. Best for
-   performance-critical or trusted code, and for protocol adapters (BLE,
-   MQTT, Modbus) where you want full control.
-2. **Wasm component actors.** Use `WasmActor<H: WasmHost>` from
-   `fuchsia-actor-wasm`. Best for third-party plugins or for safe
-   sandboxed extension: components are isolated, capability-gated, and
-   portable.
-3. **Lua script actors.** Use `LuaActor<H: LuaHost>` from
-   `fuchsia-actor-lua`. Best for quick scripting, configuration-driven
-   transforms, or anywhere a full Wasm build is heavier than the task
-   warrants.
+1. **Native Rust actors** — implement the trait directly. Best for
+   performance-critical or trusted code and protocol adapters. The conditioning
+   operators in [`fuchsia-actor-builtins`](../runtimes/builtins.md) are native.
+2. **Wasm component actors** — `WasmActor<H: WasmHost>` from
+   [`fuchsia-actor-wasm`](../runtimes/wasm.md). Best for safe, sandboxed,
+   third-party extension.
+3. **Lua script actors** — `LuaActor<H: LuaHost>` from
+   [`fuchsia-actor-lua`](../runtimes/lua.md). Best for quick scripting and
+   config-driven transforms.
 
-The orchestrator doesn't distinguish them — all three are just `Actor`
-implementations registered into the `ActorRegistry`.
+The engine doesn't distinguish them — all three are `Actor`s behind a creator
+registered under a type name.
+
+## Capabilities are injected, not ambient
+
+An actor's powers beyond receive-and-emit come from `ActorCapabilities`, a typed
+bag handed to its creator at construction. The engine contributes `emit`
+(routing through this engine); the runtime contributes `schedule` (a self-timer);
+the host/provisioner contributes scoped I/O like a `state` write sink. An actor
+pulls only what it uses and stores it as a field, so its struct *is* the
+statement of what it can do. See [Capabilities](./host-capabilities.md).
 
 ## Host responsibilities
 
 Fuchsia is deliberately minimal. The host owns:
 
-- **Where actors come from.** A plugin store, a hard-coded list, a
-  manifest file — Fuchsia doesn't define this.
-- **What capabilities exist.** Fuchsia ships HTTP and a log-routing
-  convention. Anything else (KV, MQTT, BLE, custom databases) is defined
-  and implemented by the host.
-- **Integrity, versioning, install.** When the host loads a Wasm
-  component, it verifies digests, picks the version, manages allow-lists.
-  Fuchsia just executes what it's handed.
-- **Observability.** Fuchsia emits `tracing` events. The host installs
-  the subscriber (stdout, OTLP, journald, anything).
-
-This is what keeps the runtime small and the ecosystem flexible.
+- **Where actors come from** — a builtin set, a component catalog, a manifest.
+- **What capabilities exist beyond the core three** — Fuchsia ships `emit`,
+  `schedule`, and `state`. HTTP, KV, MQTT, BLE, and the like are product
+  capabilities, wired through the host's own `WasmHost` / `LuaHost`.
+- **Integrity, versioning, install** — when loading a Wasm component the host
+  verifies digests, picks the version, manages allow-lists. Fuchsia executes
+  what it's handed.
+- **Observability** — Fuchsia emits `tracing` events (and parents each handle
+  span by the upstream's, so traces follow a message across mailbox hops); the
+  host installs the subscriber.
 
 ## Next
 
-- [Runtime](./engine.md) — Graph, Registry, Orchestrator, channels, lifecycle
-- [Capabilities](./host-capabilities.md) — HTTP + log routing + injection
-- [Host Extensibility](./host-extensibility.md) — adding your own capability layer
+- [Runtime & Engine](./engine.md) — mailboxes, the handle loop, routing, lifecycle
+- [Capabilities](./host-capabilities.md) — the `emit` / `schedule` / `state` bag
+- [Host Extensibility](./host-extensibility.md) — adding your own capability imports

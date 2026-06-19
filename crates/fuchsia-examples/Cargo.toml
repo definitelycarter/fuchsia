@@ -1,0 +1,15 @@
+[package]
+name = "fuchsia-examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Runnable examples wiring fuchsia guest (wasm/lua) and builtin actors together"
+
+[dependencies]
+fuchsia-actor = { path = "../fuchsia-actor" }
+fuchsia-actor-builtins = { path = "../fuchsia-actor-builtins" }
+fuchsia-actor-wasm = { path = "../fuchsia-actor-wasm" }
+fuchsia-actor-lua = { path = "../fuchsia-actor-lua" }
+fuchsia-engine = { path = "../fuchsia-engine" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

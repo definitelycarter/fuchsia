@@ -2,77 +2,101 @@
 
 An actor-based dataflow runtime, in Rust.
 
-Workflows are graphs of actors connected by tokio mpsc channels. Each actor
-is either a native Rust implementation, a Wasm component, or a Lua script,
-all behind a single `Actor` trait. Routing between nodes lives in the graph
-definition — not in actor code — so workflow topology is a piece of
-configuration that anyone can edit, while actor implementations stay
-focused on their own logic.
+A workflow is a graph of actors. Each actor is a native Rust implementation, a
+Wasm component, or a Lua script, all behind a single `Actor` trait. Routing
+between nodes lives in the graph definition — not in actor code — so topology is
+configuration anyone can edit, while actor implementations stay focused on their
+own logic.
 
-Hosts compose a runtime by registering actors into an `ActorRegistry` and
-starting graphs against an `Orchestrator`. Universal capabilities (HTTP,
-log) ship with Fuchsia; domain-specific capabilities (MQTT, BLE, a custom
-database client, anything) are defined by the host and registered into its
-own `WasmHost` / `LuaHost` implementation.
+Actors don't run their own loop. The runtime owns the receive loop: it pulls one
+message from an actor's mailbox, calls `handle`, and routes whatever the actor
+`emit`s to the downstream actors the graph wires it to. The contract (lifecycle
++ emit) is synchronous, so even Wasm and Lua guests are driven with plain
+synchronous calls — no async bridge.
 
 ## Highlights
 
 - **Single Actor trait.** Native Rust, Wasm components, and Lua scripts all
-  implement `fuchsia_actor::Actor`. Workflows mix and match freely.
-- **Dataflow, not classic actors.** Each actor produces output and the
-  runtime delivers it to downstream nodes per the graph's edges. Actors
-  don't address each other directly — topology is declared in JSON.
-- **Per-node concurrency.** Every node is its own tokio task. Independent
-  branches run in parallel automatically. Backpressure and fan-out are
-  inherited from bounded mpsc channels.
-- **Host-extensible.** `WasmHost` and `LuaHost` traits let the embedder
-  define its own WIT world (for Wasm) or Lua globals (for scripts), so
-  domain-specific capabilities slot in without forking the runtime.
-- **Tracing facade.** Spans on workflow lifecycle, spans per actor,
-  trace-level events on every message. No subscriber is bundled — the
-  consuming application installs `tracing-subscriber`,
-  `tracing-opentelemetry`, or whatever it prefers.
-- **Cancellation cascades.** A single `CancellationToken` reaches every
-  actor. When the entry channel closes or `WorkflowHandle::cancel()` is
-  called, the whole topology drains cleanly.
+  implement `fuchsia_actor::Actor` (`setup` / `handle` / `teardown`, sync, over
+  `&mut self`). Graphs mix and match freely.
+- **Handle-per-message.** The runtime drives the loop and reports each outcome to
+  the message's ack; per-actor state is just struct fields, no locking.
+- **Declarative routing.** Actors emit; the engine delivers to successors via a
+  live routing table, so graphs can be added or torn down without
+  re-instantiating the actors they share.
+- **Capabilities, injected.** What an actor can do beyond receive-and-emit is a
+  typed bag handed in at construction — `emit` (engine), `schedule` (a self-timer,
+  runtime), `state` (a pre-scoped write sink, host). An actor's struct *is* the
+  statement of its authority.
+- **Host owns the import set.** Fuchsia owns one contract, `fuchsia:actor`
+  (lifecycle + emit + payload). What else a Wasm/Lua actor may import is the
+  product's, defined through the `WasmHost` / `LuaHost` seam.
+- **Per-node concurrency.** Each actor is its own tokio task with a bounded
+  mailbox. Fan-out comes from edges; a full mailbox sheds (at-most-once) instead
+  of stalling the producer.
+- **Tracing facade.** Spans per actor, each handle span parented by the upstream's
+  so a trace follows a message across mailbox hops. No subscriber bundled — the
+  host installs one.
 
 ## Quick Start
 
-Fuchsia is a library, not a CLI. Add the crates you need to your project:
+Fuchsia is a library, not a CLI. Add the crates you need:
 
 ```toml
 [dependencies]
-fuchsia-actor       = { git = "..." }   # the Actor trait + I/O primitives
-fuchsia-runtime     = { git = "..." }   # registry + graph + orchestrator
-fuchsia-capabilities = { git = "..." }  # HTTP capability (optional)
-fuchsia-actor-wasm  = { git = "..." }   # if you want to host Wasm actors
-fuchsia-actor-lua   = { git = "..." }   # if you want to host Lua actors
+fuchsia-actor          = { git = "..." }  # the Actor trait + capability bag + message types
+fuchsia-engine         = { git = "..." }  # routing: add_node / add_edge / push
+fuchsia-actor-builtins = { git = "..." }  # passthrough, debounce, deadband, dedup, commit
+fuchsia-actor-wasm     = { git = "..." }  # host Wasm component actors
+fuchsia-actor-lua      = { git = "..." }  # host Lua script actors
+# fuchsia-workflow + fuchsia-provisioner  # if you persist workflows and provision them
 ```
 
-A minimal program:
+A minimal graph — push a reading through one builtin to a Wasm guest:
 
 ```rust
-use std::sync::Arc;
-use fuchsia_runtime::{ActorRegistry, Graph, Orchestrator};
+use std::collections::BTreeMap;
+use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorId, Message, COMPONENT_ENV_KEY};
+use fuchsia_actor_builtins::DedupCreator;
+use fuchsia_actor_wasm::{BaseHost, WasmActorCreator};
+use fuchsia_engine::Engine;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut registry = ActorRegistry::new();
-    // registry.register::<MyActor, MyConfig, _>("my.actor", |cfg| MyActor::new(cfg));
+    let engine = Engine::new();
+    engine.register("dedup", DedupCreator).await;
+    engine.register(
+        "wasm",
+        WasmActorCreator::new(BaseHost::new())?.with_path("echo", "components/echo.wasm")?,
+    ).await;
 
-    let graph = serde_json::from_str::<Graph>(/* your graph JSON */)?;
-    let orchestrator = Orchestrator::new(Arc::new(registry));
-    let handle = orchestrator.start(&graph)?;
+    let dedup = ActorId::scoped("demo", "dedup");
+    let echo  = ActorId::scoped("demo", "echo");
 
-    handle.send(json!({ "event": "hello" })).await?;
-    let _results = handle.join().await;
+    let mut env = BTreeMap::new();
+    env.insert(COMPONENT_ENV_KEY.to_owned(), "echo".to_owned());
+    let echo_cfg = ActorConfig { env, settings: Default::default() };
+
+    engine.add_node(dedup.clone(), "dedup", &ActorConfig::default(), ActorCapabilities::new()).await?;
+    engine.add_node(echo.clone(),  "wasm",  &echo_cfg,               ActorCapabilities::new()).await?;
+    engine.add_edge(dedup.clone(), echo.clone())?;
+
+    engine.push(&dedup, Message::json("reading", json!(42)))?;
     Ok(())
 }
 ```
 
-See the [mdBook documentation](./docs/book/src/) for the full architecture
-and the per-actor-implementation guides.
+For a complete runnable demo wiring a Lua actor, a builtin, and a Wasm component
+into one graph, see [`crates/fuchsia-examples`](./crates/fuchsia-examples):
+
+```bash
+(cd test-components/actor-echo && cargo component build --release)
+cargo run -p fuchsia-examples
+```
+
+See the [mdBook documentation](./docs/book/src/) for the full architecture and
+the per-implementation guides.
 
 ## Development
 
@@ -82,26 +106,31 @@ cargo test --workspace
 cargo fmt
 ```
 
-The Wasm integration test requires the test component to be built first:
+The Wasm integration test (and the example) need the test component built first;
+they skip / print instructions otherwise:
 
 ```bash
-cd test-components/test-actor-component && cargo component build --release
+cd test-components/actor-echo && cargo component build --release
 ```
 
 Benches use criterion — see [`.claude/skills/bench/SKILL.md`](./.claude/skills/bench/SKILL.md):
 
 ```bash
-cargo bench -p fuchsia-runtime --bench chain_throughput
-cargo bench -p fuchsia-runtime --bench fan_out
+cargo bench -p fuchsia-runtime --bench runtime
 ```
 
 ## Layout at a Glance
 
-- `crates/fuchsia-actor` — the `Actor` trait + `Inbox` / `Emitter` / `Context` / `ActorError`
-- `crates/fuchsia-runtime` — the engine (Graph, Registry, Orchestrator)
-- `crates/fuchsia-capabilities` — universal capabilities (HTTP)
-- `crates/fuchsia-actor-wasm` — Wasm-component-hosting Actor implementation
-- `crates/fuchsia-actor-lua` — Lua-script-hosting Actor implementation
+- `crates/fuchsia-actor` — the contract: `Actor` trait, capability bag, `Message`, creator/registry
+- `crates/fuchsia-transport` — bounded mailbox + delivery/ack plumbing
+- `crates/fuchsia-runtime` — the handle-per-message loop; provides `schedule`
+- `crates/fuchsia-engine` — routing between actors per graph edges; provides `emit`
+- `crates/fuchsia-workflow` — persisted workflow definitions (Slate-backed)
+- `crates/fuchsia-provisioner` — turns stored workflows into running engine graphs
+- `crates/fuchsia-actor-builtins` — native builtin actors
+- `crates/fuchsia-actor-wasm` — Wasm-component-hosting actors
+- `crates/fuchsia-actor-lua` — Lua-script-hosting actors
+- `crates/fuchsia-examples` — runnable mixed-runtime demo
 
 See [`docs/book/src/reference/crate-map.md`](./docs/book/src/reference/crate-map.md)
-for dependencies and a more detailed map.
+for dependencies and a fuller map.

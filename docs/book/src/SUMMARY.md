@@ -5,18 +5,19 @@
 # Architecture
 
 - [Overview](./architecture/overview.md)
-- [Runtime](./architecture/engine.md)
+- [Runtime & Engine](./architecture/engine.md)
 - [Capabilities](./architecture/host-capabilities.md)
 - [Host Extensibility](./architecture/host-extensibility.md)
 
-# Actor Implementations
+# Actors
 
+- [Builtins](./runtimes/builtins.md)
 - [WebAssembly](./runtimes/wasm.md)
 - [Lua](./runtimes/lua.md)
 
-# Graphs
+# Workflows
 
-- [Configuration](./workflows/config.md)
+- [Definition & Provisioning](./workflows/config.md)
 
 # Reference
 

@@ -677,6 +677,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuchsia-examples"
+version = "0.0.1-alpha.0"
+dependencies = [
+ "fuchsia-actor",
+ "fuchsia-actor-builtins",
+ "fuchsia-actor-lua",
+ "fuchsia-actor-wasm",
+ "fuchsia-engine",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fuchsia-provisioner"
 version = "0.0.1-alpha.0"
 dependencies = [

@@ -1,63 +1,76 @@
 # Crate Map
 
-Fuchsia is five crates: a lean API surface (`fuchsia-actor`), the engine
-(`fuchsia-runtime`), a small capability library (`fuchsia-capabilities`),
-and two actor implementations for Wasm and Lua. Hosts depend on whichever
-subset they need.
+Fuchsia is a stack of small crates. `fuchsia-actor` is the contract everything
+depends on; each layer above adds one concern. Hosts depend on whichever subset
+they need.
 
 ## Crates
 
-| Crate | Role | Dependencies |
-|-------|------|--------------|
-| `fuchsia-actor` | `Actor` trait + `Inbox` / `Emitter` / `Context` / `ActorError`. The API surface third-party actor packs depend on — kept intentionally lean so plugin authors don't transitively pull in the engine. | `async-trait`, `serde_json`, `thiserror`, `tokio[sync]`, `tokio-util[rt]`, `tracing` |
-| `fuchsia-runtime` | `Graph`, `Node`, `Edge`, `ActorRegistry`, `ActorFactory`, `Orchestrator`, `WorkflowHandle`. Wires bounded tokio mpsc channels per graph edge, spawns one task per node, handles cancellation and completion-cascade. Criterion benches live under `benches/`. | `fuchsia-actor`, `serde`, `serde_json`, `tokio`, `tokio-util`, `tracing` |
-| `fuchsia-capabilities` | Universal capability interfaces. Currently `http::HttpClient` async trait + `AllowedHosts` policy + `ReqwestHttp` default impl. Hosts inject these into actor constructors. | `async-trait`, `reqwest`, `thiserror`, `url` |
-| `fuchsia-actor-wasm` | Wasm-component-hosting `Actor` implementation. `WasmActor<H: WasmHost>` is generic over a host trait so hosts can define their own WIT world. Persistent `Store` per actor; drives the component's `setup`/`handle`/`teardown` lifecycle. Ships `DefaultHost` for the canonical `actor-component` world (log + http + emit). | `fuchsia-actor`, `fuchsia-capabilities`, `async-trait`, `futures`, `serde_json`, `tokio`, `tracing`, `wasmtime` (component-model + async), `wasmtime-wasi` |
-| `fuchsia-actor-lua` | Lua-script-hosting `Actor` implementation. `LuaActor<H: LuaHost>` mirrors `WasmActor` — generic over a host trait that owns global registration. Persistent VM per actor; drives optional `setup()` / required `handle(ctx, msg)` / optional `teardown()`. Ships `DefaultLuaHost` with log + http + emit. | `fuchsia-actor`, `fuchsia-capabilities`, `async-trait`, `futures`, `mlua` (lua54 + send + vendored), `serde_json`, `tokio`, `tracing` |
+| Crate | Role | Key dependencies |
+|-------|------|------------------|
+| `fuchsia-actor` | The contract: `Actor` trait, `ActorCreator`/`ActorFactory`, `ActorCapabilities` (`Emit`/`Schedule`/`StateSink`), `Message`/`MessageValue`, `ActorContext`, `ActorConfig`, `ActorId`, `ActorError`, `COMPONENT_ENV_KEY`. Intentionally lean so actor packs don't pull in the engine. | `bson`, `serde_json`, `thiserror` |
+| `fuchsia-transport` | Message delivery plumbing: the bounded `mailbox` (mpsc of `Delivery`), `Delivery` (message + `Ack` + trace span), `Ack` (`Health` at-most-once / `Complete` at-least-once), `Offer`. No `Transport` trait — durability is layered in front of the channel. | `fuchsia-actor`, `tokio[sync]`, `tracing` |
+| `fuchsia-runtime` | The actor substrate. `Runtime` owns the recv→handle→ack loop (one tokio task per actor), runs the lifecycle, and provides the `schedule` capability (`TokioSchedule`). `ActorRegistry` is the live address book of `ActorHandle`s. Criterion bench under `benches/`. | `fuchsia-actor`, `fuchsia-transport`, `tokio`, `tracing`, `thiserror` |
+| `fuchsia-engine` | Routing between actors per a graph's edges. `Engine` (shareable as `Arc`) does `add_node`/`add_edge`/`remove_graph`/`push` over a live `RouterState`, and provides the `emit` capability (`RoutedEmit`). Knows only actors + addressing. | `fuchsia-actor`, `fuchsia-runtime`, `fuchsia-transport`, `tokio[sync]`, `thiserror` |
+| `fuchsia-workflow` | Persisted workflow definitions and Slate-backed CRUD. `Workflow`/`Node`/`NodeDefinition` (`Builtin`\|`Component`), `BuiltinConfig`, `ComponentConfig`, `Edge`, `Trigger`, plus structural `validate`. | `slate-db`/`-store`/`-query`, `bson`, `serde`, `thiserror` |
+| `fuchsia-provisioner` | Translates a stored `Workflow` into engine `add_node`/`add_edge` calls (group = workflow id). Maps builtin → type name, component → per-runtime type + component id in `env`. | `fuchsia-actor`, `fuchsia-engine`, `fuchsia-workflow`, `thiserror` |
+| `fuchsia-actor-builtins` | Native builtin actors: `passthrough`, `debounce`, `deadband`, `dedup`, `commit`, plus `register`. | `fuchsia-actor`, `bson`, `serde`, `serde_json` |
+| `fuchsia-actor-wasm` | Wasm-component-hosting actors. `WasmActor<H: WasmHost>` + `WasmActorCreator<H>` (one creator per `"wasm"` runtime, component catalog) + `BaseHost` (contract-only). Synchronous wasmtime. | `fuchsia-actor`, `wasmtime[component-model]`, `serde_json`, `tracing` |
+| `fuchsia-actor-lua` | Lua-script-hosting actors. `LuaActor<H: LuaHost>` + `LuaActorCreator<H>` (one creator per `"lua"` runtime, script catalog) + `BaseLuaHost`. Synchronous mlua. | `fuchsia-actor`, `mlua[lua54,send,vendored]` (pinned `0.11`), `serde_json`, `tracing` |
+| `fuchsia-examples` | Runnable demo wiring a Lua actor, a builtin, and a Wasm component into one engine graph (`cargo run -p fuchsia-examples`). | the four actor/engine crates above, `tokio`, `serde_json` |
 
-## Dependency Flow
+## Dependency flow
 
 ```mermaid
 graph TD
-    Actor["fuchsia-actor<br/>(Actor trait + I/O)"]
-    Caps["fuchsia-capabilities<br/>(HTTP)"]
+    Actor["fuchsia-actor<br/>(contract)"]
+    Transport["fuchsia-transport<br/>(mailbox + ack)"]
+    Runtime["fuchsia-runtime<br/>(handle loop + schedule)"]
+    Engine["fuchsia-engine<br/>(routing + emit)"]
+    Workflow["fuchsia-workflow<br/>(stored defs)"]
+    Provisioner["fuchsia-provisioner<br/>(defs → graph)"]
+    Builtins["fuchsia-actor-builtins"]
+    Wasm["fuchsia-actor-wasm"]
+    Lua["fuchsia-actor-lua"]
 
-    Actor --> Runtime["fuchsia-runtime<br/>(Graph, Registry, Orchestrator)"]
-
-    Actor --> Wasm["fuchsia-actor-wasm<br/>(WasmActor + DefaultHost)"]
-    Caps  --> Wasm
-
-    Actor --> Lua["fuchsia-actor-lua<br/>(LuaActor + DefaultLuaHost)"]
-    Caps  --> Lua
+    Actor --> Transport
+    Actor --> Builtins
+    Actor --> Wasm
+    Actor --> Lua
+    Transport --> Runtime
+    Runtime --> Engine
+    Engine --> Provisioner
+    Workflow --> Provisioner
 ```
 
-`fuchsia-actor` is the only crate everyone else depends on. `fuchsia-runtime`
-doesn't depend on the language hosts — it knows about `Actor` and that's it.
-Language hosts depend on `fuchsia-actor` (for the trait) and `fuchsia-capabilities`
-(for the trait their `DefaultHost` consumes); they don't depend on each other
-or on the runtime.
+`fuchsia-actor` is the only crate everyone depends on. The actor implementations
+(builtins, wasm, lua) depend on the contract and nothing else in the stack — they
+don't know about the runtime or engine. The provisioner is the top: it joins the
+stored definitions (`fuchsia-workflow`) to the live engine.
 
-## Test Components
+## Test components
 
-- `test-components/test-actor-component/` — a small wasm component built
-  against the `actor-component` world (log + emit imports, actor
-  lifecycle export). Used by the `fuchsia-actor-wasm` integration test.
-  Workspace-excluded; requires `cargo component build --release` before
-  tests run.
+- `test-components/actor-echo/` — a small wasm component built against only
+  `fuchsia:actor` (imports `emit`, exports the lifecycle), used by the
+  `fuchsia-actor-wasm` integration test. Its own standalone cargo workspace;
+  requires `cargo component build --release`. The test skips if the artifact is
+  absent.
 
-## What's Not Here
+## WIT
 
-Things you might expect to find as crates and don't, because they're host
-concerns rather than runtime concerns:
+- `wit/` ships **only** the `fuchsia:actor` package — `actor.wit` (lifecycle),
+  `types.wit` (`payload`), `emit.wit`. There is **no bundled platform world** and
+  no http/log/wasi interfaces; products compose their own worlds, and the base
+  host defines its contract-only world inline in `bindgen!`.
 
-- **No component registry / install layer.** Hosts decide where Wasm
-  components and Lua scripts live, how they're versioned, and how digests
-  are verified. The actor crates accept already-loaded bytes (or compiled
-  components) at construction time.
-- **No artifact storage.** Same reason.
-- **No CLI.** Fuchsia is a library. If you want a CLI, build one against
-  `fuchsia-runtime` that loads a graph JSON and a set of actor registrations.
-- **No KV / config capability traits.** Universal-but-debatable capabilities
-  (key-value stores, configuration sources) are not in `fuchsia-capabilities`.
-  Hosts that need them can define their own traits and inject implementations
-  through their own `WasmHost` / `LuaHost`.
+## What's not here
+
+Things you might expect as crates and don't, because they're host concerns:
+
+- **No `fuchsia-capabilities` / HTTP.** The core capability set is `emit` /
+  `schedule` / `state` — all synchronous, all host-agnostic. HTTP, KV, MQTT, BLE
+  are product capabilities, wired through a product's `WasmHost` / `LuaHost`.
+- **No component registry / artifact store.** Hosts decide where components and
+  scripts live and how they're versioned; creators accept already-loaded
+  artifacts into their catalog.
+- **No CLI.** Fuchsia is a library. `fuchsia-examples` shows the embedding shape.

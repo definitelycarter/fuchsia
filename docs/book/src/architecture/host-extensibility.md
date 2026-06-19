@@ -1,208 +1,167 @@
 # Host Extensibility
 
-A host with custom capabilities needs to expose them to its actors. For
-**native Rust actors** this is trivial — capabilities are just `Arc<dyn
-SomeTrait>` parameters in the actor's constructor. For **Wasm and Lua
-actors** there's an extra layer, because those languages need explicit
-bindings on the host side.
+Fuchsia owns exactly one contract: **`fuchsia:actor`** — the lifecycle
+(`setup`/`handle`/`teardown`), the host-imported `emit`, and the payload types.
+It does **not** prescribe what else a Wasm component or Lua script may call. A
+home-automation product might expose `ble` / `mqtt` / `state` imports; an
+n8n-style product might expose `webhook` / `http`. Both run on the same engine.
 
-That extra layer is the `WasmHost` and `LuaHost` traits.
+That openness is the `WasmHost` and `LuaHost` seam. The guest crates are
+*generic* over it: they link the actor lifecycle plus `emit`, and the product
+supplies a host that adds its own capability imports.
+
+For **native** actors there's no seam — a capability is just an `Arc<dyn Trait>`
+in the bag (see [Capabilities](./host-capabilities.md)). The seam exists only
+because Wasm and Lua need explicit host-side bindings.
+
+## The central constraint
+
+- fuchsia ships the `fuchsia:actor` package in `wit/` and bundles **no platform
+  world** — a world that fixes a capability import set belongs to a *product*.
+- The base hosts (`BaseHost`, `BaseLuaHost`) satisfy nothing but the contract.
+  Each guest crate's base host defines its own world **inline** in `bindgen!`
+  (export `actor`, import `emit`) — an implementation detail of the crate, not
+  something in `wit/`.
+- A product composes its own world = export `fuchsia:actor/actor` + import its
+  chosen capabilities, and implements `WasmHost` / `LuaHost` to wire them.
 
 ## WasmHost
 
-`fuchsia-actor-wasm` ships `WasmActor<H: WasmHost>` — generic over a host
-trait that owns the world-specific bits:
-
 ```rust
-#[async_trait]
 pub trait WasmHost: 'static + Send + Sync {
-    type State: WasiView + 'static + Send;
+    type State: 'static + Send;
     type Bindings: Send;
 
     fn add_to_linker(&self, linker: &mut Linker<Self::State>) -> wasmtime::Result<()>;
-    fn initial_state(&self, emitter: Emitter) -> Self::State;
-    async fn instantiate(...) -> wasmtime::Result<Self::Bindings>;
-    async fn call_setup(...) -> wasmtime::Result<Result<(), String>>;
-    async fn call_handle(...) -> wasmtime::Result<Result<(), String>>;
-    async fn call_teardown(...) -> wasmtime::Result<Result<(), String>>;
+    fn trap_unknown_imports(&self) -> bool { true }
+    fn initial_state(&self, emit: Arc<dyn Emit>) -> Self::State;
+    fn instantiate(&self, store, component, linker) -> wasmtime::Result<Self::Bindings>;
+    fn call_setup(&self, …)    -> wasmtime::Result<Result<(), String>>;
+    fn call_handle(&self, …)   -> wasmtime::Result<Result<(), String>>;
+    fn call_teardown(&self, …) -> wasmtime::Result<Result<(), String>>;
 }
 ```
 
-The host owns:
+All methods are **synchronous** — the contract needs no async, so this crate
+uses synchronous wasmtime (no `async_support`, no `block_on`). The host owns:
 
-- **The WIT world** the components import from and export to. This is the
-  contract plugin authors target.
-- **The `State` type** held inside each `wasmtime::Store`. Holds the
-  `WasiCtx`, capability handles (HTTP client, KV store, MQTT client,
-  whatever), the actor's `Emitter`, and any per-Store bookkeeping. Built
-  once per actor in `initial_state`; persists for the actor's lifetime.
-- **The `Bindings` type** — output of `wasmtime::component::bindgen!`
-  against the host's WIT.
+- **The WIT world** components target — the contract plugin authors compile to.
+- **The `State`** held in each `wasmtime::Store`: the downstream `Emit` handle
+  (so the `emit` import can reach it) plus any product handles and (if the world
+  uses WASI) a `WasiCtx`. Built once per actor in `initial_state`.
+- **The `Bindings`** — output of `wasmtime::component::bindgen!` for the world.
 
-`WasmActor` provides the rest: channel loop, JSON marshalling between
-inbox messages and the component's `handle` function, lifecycle
-orchestration (setup → loop → teardown), and cancellation.
+`WasmActor` provides the rest: build the store, instantiate, marshal `Message`
+↔ WIT `payload`, and drive `setup` → `handle` → `teardown`.
 
-### Writing a custom WasmHost
+`trap_unknown_imports` defaults to `true`: real components routinely drag in
+WASI imports they never call, and a contract-only host has no reason to satisfy
+them. With it on, the actor defines those unsatisfied imports as **traps** —
+the component instantiates, but actually *calling* an unwired import fails
+loudly. A host that wants strict "every import must be satisfied" instantiation
+overrides it to `false`.
 
-Steps a custom host follows:
+### Sketch: a custom WasmHost adding an HTTP import
 
-1. **Define a WIT world.** Import whatever capabilities you provide
-   (kv, mqtt, modbus, etc.) plus the universal `fuchsia:actor/emit`
-   import, and export the `fuchsia:actor/actor` lifecycle interface that
-   all components expose.
+```rust
+// product world (its own wit/), composed against fuchsia:actor:
+//   world n8n-component {
+//     import fuchsia:actor/emit@0.1.0;
+//     import n8n:http/outbound;
+//     export fuchsia:actor/actor@0.1.0;
+//   }
+wasmtime::component::bindgen!({ path: "wit", world: "n8n-component" });
 
-   ```wit
-   package iot:actor;
+struct N8nHostState { emit: Arc<dyn Emit>, http: Arc<dyn HttpClient> }
 
-   world iot-component {
-     import fuchsia:log/log;
-     import fuchsia:http/outbound;
-     import fuchsia:actor/emit;
-     import iot:mqtt/publish;
-     import iot:modbus/read;
-     export fuchsia:actor/actor;
-   }
-   ```
+impl fuchsia::actor::emit::Host for N8nHostState { /* forward to self.emit */ }
+impl n8n::http::outbound::Host for N8nHostState  { /* delegate to self.http */ }
 
-2. **Generate bindings.** Inside a host module:
+struct N8nHost { http: Arc<dyn HttpClient> }
 
-   ```rust
-   wasmtime::component::bindgen!({
-       path: "wit",
-       world: "iot:actor/iot-component",
-       imports: { default: async },
-       exports: { default: async },
-   });
-   ```
+impl WasmHost for N8nHost {
+    type State = N8nHostState;
+    type Bindings = N8nComponent;
+    fn add_to_linker(&self, l: &mut Linker<Self::State>) -> wasmtime::Result<()> {
+        N8nComponent::add_to_linker::<_, HasState>(l, |s| s)
+    }
+    fn initial_state(&self, emit: Arc<dyn Emit>) -> Self::State {
+        N8nHostState { emit, http: self.http.clone() }
+    }
+    /* instantiate / call_setup / call_handle / call_teardown:
+       call the bindgen-produced N8nComponent methods */
+}
+```
 
-3. **Define a state struct.** It holds the WASI context, the resource
-   table, capability handles, and the actor's `Emitter`:
+If the import is inherently async (HTTP via `reqwest`), the *product* decides how
+to bridge it inside its import callback — e.g. `block_on`, or running async
+wasmtime. fuchsia's core stays synchronous; that choice is the product's.
 
-   ```rust
-   pub struct IotHostState {
-       wasi: WasiCtx,
-       table: ResourceTable,
-       http: Arc<dyn HttpClient>,
-       mqtt: Arc<dyn MqttPublisher>,
-       modbus: Arc<dyn ModbusClient>,
-       emitter: Emitter,
-   }
+### Register it per runtime
 
-   impl WasiView for IotHostState { /* ... */ }
-   ```
+Guest actors are registered **one creator per runtime kind**, not per component.
+`WasmActorCreator<H>` owns a catalog of compiled components keyed by id; each
+node names its component in `ActorConfig.env` under `COMPONENT_ENV_KEY`:
 
-4. **Implement the WIT Host traits** that bindgen generated for each
-   import. Each `impl iot::mqtt::publish::Host for IotHostState { ... }`
-   delegates to the corresponding capability handle. With async imports
-   (`imports: { default: async }`), implementations can `.await` directly
-   on the underlying async capability — no `block_on` bridging needed.
+```rust
+let creator = WasmActorCreator::with_engine(engine, N8nHost { http })
+    .with_path("temp-sensor", "components/temp-sensor.wasm")?;
+engine.register("wasm", creator).await;
+```
 
-   You'll also need an `impl fuchsia::actor::emit::Host for IotHostState`
-   that forwards into `self.emitter`. `DefaultHost` provides a reference
-   shape.
-
-5. **Implement `WasmHost`** for your host struct. The methods are
-   mechanical — they wire up the linker, build initial state from the
-   provided emitter, and call the bindgen-produced `instantiate_async` /
-   `call_setup` / `call_handle` / `call_teardown` functions. Use
-   `crates/fuchsia-actor-wasm/src/default.rs` as a reference.
-
-6. **Register your actor.**
-
-   ```rust
-   let actor = WasmActor::builder(engine.clone(), IotHost::new(http, mqtt, modbus))
-       .component_from_path("plugins/temp-sensor.wasm")
-       .build()?;
-
-   registry.register::<WasmActor<IotHost>, Value, _>(
-       "plugins.temp-sensor",
-       move |_| actor.clone(),
-   );
-   ```
-
-Plugins built against `iot:actor/iot-component` now run in this host. A
-plugin built against the canonical `fuchsia:platform/actor-component`
-world would still work — but it can only import the universal
-capabilities (log, http, emit). The IoT-specific imports require the IoT
-host.
+A component built against only `fuchsia:actor` runs under any host; one that
+imports `n8n:http/outbound` needs a host that wires it.
 
 ## LuaHost
 
-Lua's version is simpler because there's no WIT or bindgen — just Rust
-functions registered into the Lua state:
+Lua's seam is one method — no WIT, no bindgen:
 
 ```rust
 pub trait LuaHost: 'static + Send + Sync {
-    fn populate(&self, lua: &mlua::Lua, emitter: Emitter) -> mlua::Result<()>;
+    fn populate(&self, lua: &mlua::Lua, emit: Arc<dyn Emit>) -> mlua::Result<()>;
 }
 ```
 
-`populate` is called once per actor instance, immediately before the
-script source is loaded. It's where you register globals — typically as
-tables of functions. The provided `Emitter` is the actor's outbound
-channel; implementations must wire it into an `emit` global the script
-can call.
-
-### Writing a custom LuaHost
+`populate` runs once per actor, before the script loads. It registers globals —
+typically tables of functions — and must wire the provided `Emit` into an `emit`
+global. `BaseLuaHost` registers only `emit`; a product adds its own:
 
 ```rust
-#[derive(Clone)]
-pub struct IotLuaHost {
-    http: Arc<dyn HttpClient>,
-    mqtt: Arc<dyn MqttPublisher>,
-}
+struct N8nLuaHost { http: Arc<dyn HttpClient> }
 
-impl LuaHost for IotLuaHost {
-    fn populate(&self, lua: &mlua::Lua, emitter: Emitter) -> mlua::Result<()> {
-        // Register `log`, `http`, and `emit` exactly like DefaultLuaHost does:
-        crate::register_default_globals(lua, &self.http, emitter)?;
-
-        // Then add your own:
-        let mqtt = Arc::clone(&self.mqtt);
-        let table = lua.create_table()?;
-        table.set("publish", lua.create_function(move |_, (topic, payload): (String, String)| {
-            futures::executor::block_on(mqtt.publish(&topic, &payload))
-                .map_err(mlua::Error::external)
+impl LuaHost for N8nLuaHost {
+    fn populate(&self, lua: &mlua::Lua, emit: Arc<dyn Emit>) -> mlua::Result<()> {
+        BaseLuaHost::new().populate(lua, emit)?;           // emit
+        let http = self.http.clone();
+        let t = lua.create_table()?;
+        t.set("send", lua.create_function(move |_, req: mlua::Table| {
+            // a product may block_on its own async capability here
+            Ok(/* … */)
         })?)?;
-        lua.globals().set("mqtt", table)?;
-
-        Ok(())
+        lua.globals().set("http", t)
     }
 }
 ```
 
-Scripts written against this host can now call `mqtt.publish(...)` in
-addition to `log.log(...)`, `http.send(...)`, and `emit(...)`.
+Register it the same per-runtime way:
 
-`DefaultLuaHost::populate` is at `crates/fuchsia-actor-lua/src/default.rs`
-and serves as the reference for registering log/http/emit; for a real
-host you'll add your custom tables alongside those.
+```rust
+let creator = LuaActorCreator::new(N8nLuaHost { http })
+    .with_source("rename", RENAME_LUA);
+engine.register("lua", creator).await;
+```
 
 ## Naming convention
 
-Across the codebase, host-trait-implementing structs follow this
-pattern:
-
-- `DefaultHost` (Wasm) and `DefaultLuaHost` — the canonical Fuchsia
-  default. Pair with the universal `fuchsia:platform/actor-component`
-  world.
-- `<Domain>Host` and `<Domain>LuaHost` for hosts that add domain
-  capabilities — e.g. `IotHost` / `IotLuaHost` in an IoT project.
-
-There's no enforced convention; this is just what reads cleanly.
+- `BaseHost` (Wasm) and `BaseLuaHost` — contract-only, shipped by Fuchsia.
+- `<Product>Host` / `<Product>LuaHost` — a product host that adds capability
+  imports. No enforced convention; this just reads cleanly.
 
 ## When to extend vs. write a native actor
 
-Two questions worth asking before writing a custom `WasmHost` /
-`LuaHost`:
-
-1. **Do plugins genuinely need access to this capability?** If only
-   your own first-party code uses it, write a native Rust actor that
-   takes the capability handle directly. Extending the language hosts
-   only pays off when third-party Wasm components or Lua scripts also
-   need access.
-2. **Is the capability stable enough to lock into a WIT contract?** WIT
-   interface changes are version-incompatible — old plugins break. For
-   experimental capabilities, prefer native actors first; promote to a
-   WIT-exposed capability only once the shape is settled.
+1. **Do guests genuinely need this capability?** If only first-party Rust code
+   uses it, write a native actor that takes the handle through the bag. The seam
+   pays off only when third-party Wasm/Lua also needs access.
+2. **Is the shape stable enough to lock into WIT?** WIT changes are
+   version-incompatible — old plugins break. Prototype as a native actor; promote
+   to a WIT-exposed import once the shape settles.

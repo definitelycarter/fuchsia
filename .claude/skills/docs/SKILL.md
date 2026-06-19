@@ -11,34 +11,32 @@ This skill is for end-of-feature doc updates. It is not for writing new standalo
 
 ## 0. Doc surfaces in this repo (read this first)
 
-- `README.md` — overview, feature list
+- `README.md` — overview, highlights, quick start, layout.
 - `AGENTS.md` — coding guidelines, project structure, dev commands. Touch this whenever crate layout or workspace conventions change.
-- `docs/book/src/` — published mdBook. Canonical for architecture, actor implementations, graphs, and reference.
-- `crates/<crate>/README.md` — per-crate readmes (none currently — the actor crates documentation lives in the mdBook instead).
-- `examples/README.md` — examples index (pre-actor; will need rewriting when new actor-shaped examples land).
+- `docs/book/src/` — published mdBook. Canonical for architecture, actor implementations, workflows, and reference. The page set is listed in `docs/book/src/SUMMARY.md`; keep SUMMARY in sync when adding/removing a page.
+- `crates/<crate>/README.md` — per-crate readmes (none currently — crate documentation lives in the mdBook `crate-map` instead).
+
+The mdBook's built output lives in `docs/book/book/` and is gitignored — never edit it; run `mdbook build` to regenerate (and to catch broken `SUMMARY.md` links).
 
 ## 1. Affected-doc map
 
 Pick the docs to touch based on what the change altered. Widen when uncertain.
+The book pages that exist today: `introduction.md`; `architecture/{overview,engine,host-capabilities,host-extensibility}.md`; `runtimes/{builtins,wasm,lua}.md`; `workflows/config.md`; `reference/{crate-map,roadmap}.md`.
 
 | Code area / change type                                                | Update these docs                                                                                                                     |
 |------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
 | Anything that lands a roadmap item (Features or Gaps row)              | `docs/book/src/reference/roadmap.md` (remove the row — see step 3)                                                                    |
 | Anything that adds new planned work, gap, or open question             | `docs/book/src/reference/roadmap.md` (add row to relevant table)                                                                      |
 | New crate, removed crate, workspace member change                      | `docs/book/src/reference/crate-map.md`, **`AGENTS.md`** (Project Structure section), root `Cargo.toml` workspace members              |
-| New trait, crate boundary change, or runtime architecture shift        | `docs/book/src/architecture/overview.md` plus the relevant subpage (`engine.md`, `runtimes.md`, `host-capabilities.md`, `component-registry.md`); often `docs/DESIGN.md` mirrors |
-| Orchestrator scheduling / graph traversal / parallel execution         | `docs/book/src/architecture/engine.md`, `docs/book/src/workflows/execution.md`                                                        |
-| Runtime executor changes (wasm / lua / js)                             | `docs/book/src/runtimes/<wasm\|lua\|js>.md`, `docs/book/src/architecture/runtimes.md`                                                 |
-| Host capability changes (kv / config / log / http)                     | `docs/book/src/architecture/host-capabilities.md`, `docs/book/src/components/capabilities.md`                                          |
-| WIT interface changes (`wit/deps/<task\|trigger\|kv\|config\|log>`)    | `docs/book/src/components/<tasks\|triggers\|capabilities>.md`; the `.wit` files themselves are documentation — keep comments current  |
-| Component registry / manifest / packaging changes                      | `docs/book/src/architecture/component-registry.md`, `docs/book/src/components/packaging.md`, `crates/fuchsia-component-registry/README.md` |
-| Workflow config schema or resolver changes                             | `docs/book/src/workflows/config.md`, `docs/book/src/workflows/resolution.md`, `crates/fuchsia-resolver/README.md`                     |
-| Trigger handling (poll / webhook / WASI incoming-request)              | `docs/book/src/workflows/triggers.md`, `docs/book/src/components/triggers.md`                                                         |
-| Input resolution (minijinja, type coercion)                            | `docs/book/src/workflows/input-resolution.md`                                                                                          |
-| Node data / error type changes                                         | `docs/book/src/data-model/<node-data\|errors>.md`                                                                                      |
-| New or changed example workflow                                        | `docs/book/src/examples/use-cases.md`, `docs/USE_CASES.md` (legacy mirror), `examples/README.md`                                       |
+| New trait, crate boundary change, or core architecture shift           | `docs/book/src/architecture/overview.md` plus the relevant subpage (`engine.md`, `host-capabilities.md`, `host-extensibility.md`)     |
+| Runtime loop / mailbox / routing / scheduling / capability changes     | `docs/book/src/architecture/engine.md` (runtime + transport + engine), `docs/book/src/architecture/host-capabilities.md`              |
+| Actor implementation changes (builtins / wasm / lua)                   | `docs/book/src/runtimes/<builtins\|wasm\|lua>.md`; for the host seam, `docs/book/src/architecture/host-extensibility.md`              |
+| WIT interface changes (`wit/{actor,types,emit}.wit`)                   | `docs/book/src/runtimes/wasm.md` (the contract section); the `.wit` files themselves are documentation — keep comments current        |
+| Workflow definition schema or provisioning changes                     | `docs/book/src/workflows/config.md`                                                                                                   |
+| Trigger handling                                                       | `docs/book/src/workflows/config.md` (trigger section)                                                                                 |
+| New or changed example                                                 | `docs/book/src/workflows/config.md` (provisioning example), `README.md` (quick start); the runnable example is `crates/fuchsia-examples` |
 | New benchmark, or bench numbers moved materially                       | Run the [[bench]] skill; benchmarks aren't documented in the book yet — when a `docs/book/src/reference/benchmarks.md` lands, add a row here |
-| User-visible API, CLI command, or feature                              | `README.md` (overview / feature list)                                                                                                  |
+| User-visible API or feature                                            | `README.md` (overview / highlights / quick start)                                                                                    |
 | Build / test / contribution conventions change                         | `AGENTS.md` (Development and Guidelines sections)                                                                                      |
 
 If a change touches multiple rows, take the union.
@@ -70,8 +68,8 @@ When adding new planned work, match the existing table shape: `| Feature | Descr
 
 These two are the most likely to silently drift, because nothing forces them to update:
 
-- **`README.md`** quotes the feature list. Any user-visible capability added or removed needs to land here in the same commit.
-- **`AGENTS.md`** currently lists pre-runtime-unification crates that no longer exist (`fuchsia-runtime`, `fuchsia-engine`, `fuchsia-host`, `fuchsia-task-host`, `fuchsia-trigger-host`, `fuchsia-task`, `fuchsia-trigger`). If you touch crate layout, fix the Project Structure section in the same commit — don't perpetuate the drift.
+- **`README.md`** quotes the highlights and a quick-start snippet. Any user-visible capability or API shape added/removed/renamed needs to land here in the same commit — and the quick-start code must still compile against the current API.
+- **`AGENTS.md`** Project Structure mirrors the crate layout (`fuchsia-actor` → `transport` → `runtime` → `engine` → `workflow`/`provisioner`, plus `builtins`, `actor-wasm`, `actor-lua`, `examples`). If you add, remove, or rename a crate, fix that section in the same commit — it's the section that drifts most silently.
 
 ## 5. Commit-time integration
 
@@ -83,7 +81,7 @@ The commit message body should mention doc updates explicitly when they're subst
 Updated: AGENTS.md, docs/book/src/architecture/engine.md
 ```
 
-or in prose: "Also updates the architecture overview to reflect the new orchestrator boundary."
+or in prose: "Also updates the architecture overview to reflect the new engine routing boundary."
 
 See the [[commit]] skill for the rest of the commit workflow.
 
@@ -94,7 +92,7 @@ See the [[commit]] skill for the rest of the commit workflow.
 - Don't write planning docs, decision logs, "thoughts" files, or `NOTES.md` unless the user asks.
 - Don't create per-feature design docs as separate files — design notes belong inside the relevant mdBook page (typically under `docs/book/src/architecture/` or `docs/book/src/workflows/`).
 - Don't write tutorial content speculatively — wait until the user signals it's wanted.
-- **Don't add more top-level `docs/*.md` files** that duplicate mdBook content — the existing duplication (`docs/DESIGN.md` ↔ `docs/book/src/architecture/*`, etc.) is already a maintenance hazard; don't make it worse.
+- **Don't add top-level `docs/*.md` files** that duplicate mdBook content. The book under `docs/book/src/` is the single source of design documentation — there are deliberately no legacy mirrors; don't introduce any.
 
 If you find yourself wanting to create a new `.md` file, the answer is almost always "add a section to an existing mdBook page" instead.
 
@@ -105,5 +103,4 @@ If you find yourself wanting to create a new `.md` file, the answer is almost al
 - Marking a roadmap row done by adding a "~~done~~" or "DONE" marker instead of removing it.
 - Updating docs in a follow-up commit (leaves an intermediate stale state).
 - Writing speculative planning files outside `docs/book/src/reference/roadmap.md`.
-- Updating `docs/book/src/.../page.md` but not its `docs/*.md` legacy mirror (or vice versa), leaving the duplicates more divergent than before.
-- Editing the mdBook `SUMMARY.md` to add a page and forgetting to create the page itself (broken link in published output).
+- Editing the mdBook `SUMMARY.md` to add a page and forgetting to create the page itself (broken link in published output), or adding a page without listing it in `SUMMARY.md` (orphaned, unpublished).

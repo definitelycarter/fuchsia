@@ -1,173 +1,148 @@
-# Graph Configuration
+# Definition & Provisioning
 
-A workflow is a `Graph` — a directed graph of nodes with entry-point
-semantics. `Graph`, `Node`, and `Edge` are plain Rust types with
-`serde::Serialize` / `Deserialize` derives, so workflows can be built
-programmatically *or* deserialized from JSON.
+A workflow is a persisted directed graph of nodes. `fuchsia-workflow` owns the
+stored shape (and Slate-backed CRUD); `fuchsia-provisioner` turns one into a
+running graph on the engine. You can also skip the stored form and drive the
+[engine directly](#provisioning-without-the-store).
 
-## Shape
+## The stored shape
 
 ```rust
-pub struct Graph {
-    pub entry: String,        // id of the node that receives inbound messages
+pub struct Workflow {
+    pub id: WorkflowId,        // serialized as "_id" (a bson ObjectId)
+    pub name: String,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 pub struct Node {
-    pub id: String,
-    pub actor: String,                  // registry key
-    pub config: serde_json::Value,      // passed to the actor's factory
+    pub id: NodeId,                  // unique within the workflow
+    pub definition: NodeDefinition,  // what it does
+    pub trigger: Option<Trigger>,    // what fires it from outside (entry node)
 }
 
-pub struct Edge {
-    pub from: String,
-    pub to: String,
+pub enum NodeDefinition {            // tagged: { "type", "configuration" }
+    Builtin(BuiltinConfig),          //   "builtin"
+    Component(ComponentConfig),      //   "component"
 }
+
+pub struct BuiltinConfig   { pub name: String, pub env: BTreeMap<String,String>, pub settings: Document }
+pub struct ComponentConfig { pub runtime: Runtime, pub component: String, pub settings: Document }
+pub enum   Runtime         { Wasm, Lua }    // "wasm" | "lua"
+
+pub struct Edge { pub from: NodeId, pub to: NodeId }
 ```
+
+Every type derives `serde`, so a workflow is a JSON (or BSON) document.
+
+- A **`Builtin`** node names a registered native actor (`passthrough`,
+  `debounce`, …). Its `env` is host-curated; `settings` is the operator's opaque
+  config (e.g. `{ "delay_ms": 500 }`).
+- A **`Component`** node is a Wasm or Lua guest. `runtime` selects which guest
+  runtime backs it; `component` identifies the artifact within that runtime's
+  catalog; `settings` is the component's own config.
+- A **`Trigger`** marks a node as an *entry* — fed from outside the graph rather
+  than by an edge. `Workflow::validate` rejects a trigger node with an incoming
+  edge (a trigger node must be a source).
 
 ## JSON form
 
 ```json
 {
-  "entry": "ingest",
+  "_id": "665f1c2a4b3a4e0012ab34cd",
+  "name": "Fridge temperature",
   "nodes": [
     {
-      "id": "ingest",
-      "actor": "fuchsia.json-path",
-      "config": { "path": "$.temperature" }
+      "id": "ingress",
+      "definition": { "type": "builtin", "configuration": { "name": "passthrough" } },
+      "trigger": { "on": "entity_changed", "config": { "entity": "sensor.fridge" } }
+    },
+    {
+      "id": "normalize",
+      "definition": {
+        "type": "component",
+        "configuration": { "runtime": "lua", "component": "celsius-to-f", "settings": {} }
+      }
     },
     {
       "id": "debounce",
-      "actor": "fuchsia.debounce",
-      "config": { "window_ms": 500 }
+      "definition": { "type": "builtin", "configuration": { "name": "debounce", "settings": { "delay_ms": 500 } } }
     },
     {
-      "id": "store",
-      "actor": "iot.local-store.write",
-      "config": { "table": "readings" }
-    },
-    {
-      "id": "history",
-      "actor": "iot.history.push",
-      "config": { "endpoint": "https://history.example.com/readings" }
+      "id": "commit",
+      "definition": { "type": "builtin", "configuration": { "name": "commit" } }
     }
   ],
   "edges": [
-    { "from": "ingest",   "to": "debounce" },
-    { "from": "debounce", "to": "store"   },
-    { "from": "debounce", "to": "history" }
+    { "from": "ingress",   "to": "normalize" },
+    { "from": "normalize", "to": "debounce"  },
+    { "from": "debounce",  "to": "commit"    }
   ]
 }
 ```
 
-Loaded with `serde_json::from_str::<Graph>(json)` or
-`serde_json::from_reader(file)`.
+Creating one via the store takes only `{ name, nodes?, edges? }` (`NewWorkflow`);
+the store assigns the id and timestamps.
+
+## From definition to running graph
+
+`Provisioner::register_workflow(&workflow)` translates the definition into engine
+calls. The translation (`plan`) is pure and testable:
+
+- **Group = the workflow's id.** Every node id is scoped into a global
+  `ActorId` as `ActorId::scoped(workflow_id, node_id)`, so the same node name in
+  two workflows is two independent actors. The group is the unit
+  `unregister_workflow` tears down.
+- **Builtin node →** type name = `name`; `ActorConfig { env, settings }` carried
+  through verbatim.
+- **Component node →** type name = the **runtime** (`"wasm"` or `"lua"`), and the
+  `component` id is placed in `ActorConfig.env` under `COMPONENT_ENV_KEY`
+  (`"component"`). This is why guest creators are registered **per runtime**, not
+  per component: the runtime is the type, the component id is config the creator
+  resolves from its catalog (see [Host Extensibility](../architecture/host-extensibility.md)).
+
+So the engine needs creators registered for every builtin name the workflow uses,
+plus `"wasm"` / `"lua"` for any component nodes:
+
+```rust
+let engine = Arc::new(Engine::new());
+fuchsia_actor_builtins::register(/* … */);     // or engine.register("passthrough", …)
+engine.register("lua", lua_creator).await;
+engine.register("wasm", wasm_creator).await;
+
+let provisioner = Provisioner::new(engine.clone());
+provisioner.register_workflow(&workflow).await?;
+// later: provisioner.unregister_workflow(&workflow.id).await?;
+```
+
+## Provisioning without the store
+
+For ad-hoc graphs (tests, examples, a host that doesn't persist), call the engine
+directly — the provisioner is just a translator over the same API:
+
+```rust
+let a = ActorId::scoped("demo", "in");
+let b = ActorId::scoped("demo", "out");
+
+engine.add_node(a.clone(), "passthrough", &ActorConfig::default(), ActorCapabilities::new()).await?;
+engine.add_node(b.clone(), "wasm", &component_config("echo"), ActorCapabilities::new()).await?;
+engine.add_edge(a.clone(), b.clone())?;
+
+engine.push(&a, Message::json("reading", json!(42)))?;
+```
+
+`crates/fuchsia-examples` builds exactly this kind of graph across all three
+actor flavors.
 
 ## Semantics
 
-- **`entry`** is the node that receives messages from `WorkflowHandle::send`.
-  It must reference an existing node in `nodes`.
-- **`nodes[].id`** must be unique within the graph. The orchestrator
-  rejects graphs with duplicates.
-- **`nodes[].actor`** must resolve in the `ActorRegistry` provided to
-  the orchestrator. Unknown keys cause `Orchestrator::start` to fail
-  fast.
-- **`nodes[].config`** is a free-form JSON value. It's deserialized into
-  the type expected by the factory closure registered for that actor.
-  The closure decides what the schema is.
-- **`edges[].from`** and **`edges[].to`** must reference existing node
-  ids. The orchestrator validates this at startup.
-- **Edges with the same `from`** become fan-out — the upstream's output
-  is delivered to every downstream.
-- **Edges with the same `to`** become merge — the downstream's inbox
-  interleaves messages from all upstream emitters.
-
-## Common shapes
-
-**Linear chain.**
-
-```json
-{
-  "entry": "a",
-  "nodes": [{"id":"a","actor":"x","config":null},
-            {"id":"b","actor":"y","config":null},
-            {"id":"c","actor":"z","config":null}],
-  "edges": [{"from":"a","to":"b"},{"from":"b","to":"c"}]
-}
-```
-
-**Fan-out: write to two sinks.**
-
-```json
-{
-  "entry": "in",
-  "nodes": [{"id":"in","actor":"src","config":null},
-            {"id":"db","actor":"db.write","config":null},
-            {"id":"api","actor":"http.push","config":null}],
-  "edges": [{"from":"in","to":"db"},
-            {"from":"in","to":"api"}]
-}
-```
-
-**Merge: two upstreams into one sink.**
-
-```json
-{
-  "entry": "in",
-  "nodes": [{"id":"in","actor":"src","config":null},
-            {"id":"left","actor":"transform-a","config":null},
-            {"id":"right","actor":"transform-b","config":null},
-            {"id":"out","actor":"sink","config":null}],
-  "edges": [{"from":"in","to":"left"},
-            {"from":"in","to":"right"},
-            {"from":"left","to":"out"},
-            {"from":"right","to":"out"}]
-}
-```
-
-This is *merge*, not *join* — `out` will see two messages per input,
-interleaved. For "wait for one value from each upstream and combine,"
-that's an explicit join-actor's job.
-
-## What graphs don't do
-
-- **No cycles.** Adding back-edges produces a topology the orchestrator
-  doesn't currently validate against. There's nothing structurally
-  stopping you (channels are just channels), but the behavior under
-  feedback loops isn't specified — avoid until intentional cycle support
-  lands.
-- **No dynamic edges.** Routing is baked at `start()` time. If an actor
-  needs conditional output, it's the actor's job to decide what to emit;
-  the *set of edges* doesn't change at runtime.
-- **No per-edge config.** Edges are pure `from`/`to`. Filtering,
-  transforming, or routing on edge content is done by inserting a
-  dedicated actor between the two endpoints.
-
-## Loading from JSON in Rust
-
-```rust
-use fuchsia_runtime::Graph;
-use std::fs;
-
-let graph: Graph = serde_json::from_str(&fs::read_to_string("workflow.json")?)?;
-let handle = orchestrator.start(&graph)?;
-```
-
-For embedding graphs in Rust code without JSON, construct them directly:
-
-```rust
-use fuchsia_runtime::{Edge, Graph, Node};
-use serde_json::json;
-
-let graph = Graph {
-    entry: "in".into(),
-    nodes: vec![
-        Node { id: "in".into(),  actor: "src".into(),  config: json!({}) },
-        Node { id: "out".into(), actor: "sink".into(), config: json!({}) },
-    ],
-    edges: vec![Edge { from: "in".into(), to: "out".into() }],
-};
-```
-
-Either form goes through the same orchestrator path.
+- **Node ids** are unique within a workflow; the group namespaces them globally.
+- **Edges** reference existing node ids. Edges sharing a `from` are
+  [fan-out](../architecture/engine.md#topology-semantics); edges sharing a `to`
+  are merge (interleaved, not a synchronous join).
+- **Routing is the graph.** An actor decides *what* to emit; the *set of edges*
+  changes only by provisioning, never from inside `handle`.
+- **No per-edge config.** Edges are pure `from`/`to`; filtering or transforming
+  on an edge is done by inserting a dedicated actor between the endpoints.
