@@ -1,5 +1,5 @@
 //! The persisted representation of a workflow: its definition (the node graph)
-//! and Slate-backed CRUD. Mirrors `the entity crate`'s `store` module.
+//! and Slate-backed CRUD.
 //!
 //! Placement is fixed: every workflow definition lives in one collection inside
 //! the durable config column family. Workflow definitions are always durable,
@@ -18,9 +18,7 @@ use slate_query::FindOptions;
 use slate_store::Store;
 
 pub use error::WorkflowError;
-pub use node::{
-  BuiltinConfig, ComponentConfig, Edge, Node, NodeDefinition, NodeId, Runtime, Trigger,
-};
+pub use node::{BuiltinConfig, ComponentConfig, Edge, Node, NodeDefinition, NodeId, Runtime};
 pub use workflow::{NewWorkflow, Workflow, WorkflowId};
 
 const CF: &str = "config";

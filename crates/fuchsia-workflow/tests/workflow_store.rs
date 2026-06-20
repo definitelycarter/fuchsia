@@ -21,7 +21,6 @@ fn component_node(id: &str, component: &str, runtime: Runtime) -> Node {
       component: component.to_string(),
       settings: doc! { "threshold": 21 },
     }),
-    trigger: None,
   }
 }
 

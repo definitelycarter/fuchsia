@@ -144,7 +144,6 @@ mod tests {
         env: Default::default(),
         settings: Default::default(),
       }),
-      trigger: None,
     }
   }
 
@@ -156,7 +155,6 @@ mod tests {
         component: component.to_owned(),
         settings: Default::default(),
       }),
-      trigger: None,
     }
   }
 

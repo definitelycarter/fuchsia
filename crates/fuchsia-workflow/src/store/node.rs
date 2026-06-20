@@ -10,31 +10,17 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct NodeId(pub String);
 
-/// A node in the workflow graph: a stable identity plus what it does, and
-/// optionally what *fires* it.
+/// A node in the workflow graph: a stable identity plus what it does.
+///
+/// A node is purely a unit of behavior, wired to others by edges. What *fires*
+/// a workflow (a sensor change, a webhook, a schedule) is deliberately not
+/// modeled here — the engine knows nothing about how it is invoked. A consumer
+/// detects its own event and pushes a message into the chosen node
+/// (`engine.push`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
   pub id: NodeId,
   pub definition: NodeDefinition,
-  /// What feeds this node from outside the graph. A node with a trigger is an
-  /// *entry* — the host pushes into it when the source fires. Host-facing
-  /// routing metadata; sits beside `definition` so the latter stays purely
-  /// engine-facing (the engine never sees a trigger). `None` = an interior
-  /// node, fed only by edges.
-  #[serde(default)]
-  pub trigger: Option<Trigger>,
-}
-
-/// A node's external input source — the dual of `emit` being its output.
-///
-/// Adjacently tagged (`{ "on": "...", "config": { ... } }`) so more sources
-/// (schedules, webhooks) can be added without breaking stored workflows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "on", content = "config", rename_all = "snake_case")]
-pub enum Trigger {
-  /// Fire when the named entity's state changes. Referenced by id string, so a
-  /// workflow definition doesn't depend on the entity crate.
-  EntityChanged { entity: String },
 }
 
 /// What a node does, together with the configuration that goes with it.

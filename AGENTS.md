@@ -40,7 +40,8 @@ Crates are layered bottom-up; each depends only on the layer below.
   - `fuchsia-workflow` — Persisted workflow definitions + Slate-backed CRUD:
     `Workflow` / `Node` / `NodeDefinition` (`Builtin` | `Component`),
     `BuiltinConfig`, `ComponentConfig` (`runtime` Wasm|Lua, `component`,
-    `settings`), `Edge`, `Trigger`.
+    `settings`), `Edge`. No trigger concept — what fires a workflow is a
+    consumer concern (detect the event, `engine.push` into a node).
   - `fuchsia-provisioner` — Translates a stored `Workflow` into engine
     `add_node` / `add_edge` calls (group = workflow id). Builtin → type name;
     Component → per-runtime type (`"wasm"`/`"lua"`) + component id in `env`.

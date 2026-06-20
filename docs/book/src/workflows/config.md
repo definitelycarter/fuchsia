@@ -20,7 +20,6 @@ pub struct Workflow {
 pub struct Node {
     pub id: NodeId,                  // unique within the workflow
     pub definition: NodeDefinition,  // what it does
-    pub trigger: Option<Trigger>,    // what fires it from outside (entry node)
 }
 
 pub enum NodeDefinition {            // tagged: { "type", "configuration" }
@@ -43,9 +42,10 @@ Every type derives `serde`, so a workflow is a JSON (or BSON) document.
 - A **`Component`** node is a Wasm or Lua guest. `runtime` selects which guest
   runtime backs it; `component` identifies the artifact within that runtime's
   catalog; `settings` is the component's own config.
-- A **`Trigger`** marks a node as an *entry* — fed from outside the graph rather
-  than by an edge. `Workflow::validate` rejects a trigger node with an incoming
-  edge (a trigger node must be a source).
+A workflow carries **no notion of what fires it.** Triggering is the consumer's
+concern: detect the event (a sensor change, a webhook, a schedule) and
+`engine.push` a message into whichever node should receive it. The engine — and
+this definition — stay invocation-agnostic.
 
 ## JSON form
 
@@ -56,8 +56,7 @@ Every type derives `serde`, so a workflow is a JSON (or BSON) document.
   "nodes": [
     {
       "id": "ingress",
-      "definition": { "type": "builtin", "configuration": { "name": "passthrough" } },
-      "trigger": { "on": "entity_changed", "config": { "entity": "sensor.fridge" } }
+      "definition": { "type": "builtin", "configuration": { "name": "passthrough" } }
     },
     {
       "id": "normalize",

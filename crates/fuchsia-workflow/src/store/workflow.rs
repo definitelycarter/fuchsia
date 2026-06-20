@@ -3,7 +3,6 @@ use std::fmt;
 use bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
-use super::error::WorkflowError;
 use super::node::{Edge, Node};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +31,10 @@ impl fmt::Display for WorkflowId {
 
 /// A workflow definition: a directed graph of nodes. Always durable — the
 /// definition is config, so unlike an entity it carries no durability policy.
+///
+/// The graph carries no notion of what *fires* it: triggering is a consumer
+/// concern (detect an event, then `engine.push` a message into the chosen
+/// node), so the engine and this definition stay invocation-agnostic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Workflow {
   #[serde(rename = "_id")]
@@ -41,84 +44,6 @@ pub struct Workflow {
   pub edges: Vec<Edge>,
   pub created_at: i64,
   pub updated_at: i64,
-}
-
-impl Workflow {
-  /// Structural validation. A trigger node is an *entry* — fed by its trigger —
-  /// so it must have no incoming edge; an internal edge into it would be a
-  /// second, competing input source.
-  pub fn validate(&self) -> Result<(), WorkflowError> {
-    for node in &self.nodes {
-      if node.trigger.is_some() && self.edges.iter().any(|edge| edge.to == node.id) {
-        return Err(WorkflowError::Invalid(format!(
-          "trigger node `{}` has an incoming edge; a trigger node must be a source",
-          node.id.0
-        )));
-      }
-    }
-    Ok(())
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::super::node::{BuiltinConfig, NodeDefinition, NodeId, Trigger};
-  use super::*;
-
-  fn node(id: &str, trigger: Option<Trigger>) -> Node {
-    Node {
-      id: NodeId(id.to_owned()),
-      definition: NodeDefinition::Builtin(BuiltinConfig {
-        name: "passthrough".to_owned(),
-        env: Default::default(),
-        settings: Default::default(),
-      }),
-      trigger,
-    }
-  }
-
-  fn workflow(nodes: Vec<Node>, edges: Vec<Edge>) -> Workflow {
-    Workflow {
-      id: WorkflowId::new(),
-      name: "w".to_owned(),
-      nodes,
-      edges,
-      created_at: 0,
-      updated_at: 0,
-    }
-  }
-
-  fn on_entity(id: &str) -> Trigger {
-    Trigger::EntityChanged {
-      entity: id.to_owned(),
-    }
-  }
-
-  #[test]
-  fn trigger_node_as_source_is_valid() {
-    // a (trigger) → b
-    let wf = workflow(
-      vec![node("a", Some(on_entity("e"))), node("b", None)],
-      vec![Edge {
-        from: NodeId("a".to_owned()),
-        to: NodeId("b".to_owned()),
-      }],
-    );
-    assert!(wf.validate().is_ok());
-  }
-
-  #[test]
-  fn trigger_node_with_incoming_edge_is_invalid() {
-    // a → b (trigger) — an internal edge feeds a trigger node
-    let wf = workflow(
-      vec![node("a", None), node("b", Some(on_entity("e")))],
-      vec![Edge {
-        from: NodeId("a".to_owned()),
-        to: NodeId("b".to_owned()),
-      }],
-    );
-    assert!(matches!(wf.validate(), Err(WorkflowError::Invalid(_))));
-  }
 }
 
 /// Input for creating a new workflow. The store assigns the id and timestamps.

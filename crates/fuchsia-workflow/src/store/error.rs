@@ -8,6 +8,4 @@ pub enum WorkflowError {
   Serialization(String),
   #[error("workflow not found: {0}")]
   NotFound(String),
-  #[error("invalid workflow: {0}")]
-  Invalid(String),
 }

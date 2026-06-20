@@ -56,7 +56,6 @@ fn builtin(id: &str, name: &str) -> Node {
       env: Default::default(),
       settings: Default::default(),
     }),
-    trigger: None,
   }
 }
 
