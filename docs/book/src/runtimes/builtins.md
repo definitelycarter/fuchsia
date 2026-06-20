@@ -2,14 +2,14 @@
 
 `fuchsia-actor-builtins` ships the native Rust actors Fuchsia provides
 out of the box — plain `Actor` impls, no Wasm or Lua, registered under canonical
-type names. They cover the conditioning pipeline that turns a noisy input stream
-into a clean, committed value.
+type names. They cover a generic conditioning pipeline — turning a noisy input
+stream into a clean one.
 
 Register them all into an `ActorFactory` (or one at a time on the engine):
 
 ```rust
 fuchsia_actor_builtins::register(&mut factory);
-// passthrough · debounce · deadband · dedup · commit
+// passthrough · debounce · deadband · dedup
 ```
 
 Each builtin reads its typed config from the node's opaque `settings` document
@@ -57,28 +57,16 @@ a generation counter and schedules a timer tagged with it; a timer left stale by
 a newer input sees the mismatch and drops. Re-arming is cancellation-free
 because [`schedule`](../architecture/host-capabilities.md) is fire-and-forget.
 
-## commit
-
-The terminal node of an entity's pre-write pipeline: writes a conditioned value
-to entity state through the **`state`** capability. Everything upstream
-(debounce/deadband/dedup) is best-effort and lossy; the commit is the durable
-write that downstream automation hangs off.
-
-It holds a `StateSink` the host pre-scoped to the entity's storage and never
-learns where the value lands — the same neighbor-ignorance as `emit`. Because a
-silently dropped state write would hide a misconfiguration, `commit` **fails
-construction** if no `state` sink was granted (there's no no-op fallback).
-`MessageValue::Json` is serialized to BSON, `Binary` is stored as a binary blob,
-`Empty` becomes `Null`.
-
 ## A conditioning pipeline
 
-These compose into the typical shape behind one entity reading:
+These compose into a typical conditioning shape:
 
 ```text
-ingress → dedup → deadband → debounce → commit → (state)
+ingress → dedup → deadband → debounce → (out)
 ```
 
-— drop exact repeats, ignore sub-threshold jitter, settle bursts, then write the
+— drop exact repeats, ignore sub-threshold jitter, settle bursts, then emit the
 result. Each stage is its own node, so a workflow author rearranges or omits
-them in the graph without touching code.
+them in the graph without touching code. Where the result *goes* — a durable
+state write, an HTTP call — is a product-defined terminal node, not a fuchsia
+builtin.

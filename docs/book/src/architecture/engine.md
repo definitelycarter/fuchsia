@@ -169,7 +169,7 @@ These fall out of "mailbox per actor, routing table per engine":
   the *set of edges* changes only via `add_edge` / `remove_graph`, not from
   inside `handle`.
 - **No persistence of in-flight messages.** Mailboxes are in-memory. Durability
-  is the feeder's job (the at-least-once ack), or a specific actor's (e.g. the
-  `commit` builtin writing through a `state` sink).
+  is the feeder's job (the at-least-once ack), or a specific actor's (e.g. a
+  product's state-writing terminal node).
 
 These are intentional. The core is small so the actors can be specific.

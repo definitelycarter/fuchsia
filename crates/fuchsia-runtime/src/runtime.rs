@@ -48,7 +48,7 @@ impl Runtime {
 
   /// Spawn an actor with a caller-populated capability bag, returning its
   /// mailbox + health so the caller (the engine) can route to it. The caller
-  /// puts `emit` and any host/binding capabilities (a `StateSink`) in `caps`;
+  /// puts `emit` and any host/binding capabilities in `caps`;
   /// `schedule` is layered in here, since it needs the mailbox this method
   /// creates. A plain [`Runtime::spawn`] passes an empty bag.
   pub async fn spawn_with_caps(

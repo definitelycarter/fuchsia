@@ -8,7 +8,7 @@ lands (no strikethrough).
 | Feature | Description | Notes |
 |---------|-------------|-------|
 | Per-actor retry policy | Configurable retries with backoff around a node's `handle`, beyond the at-least-once feeder's retry-on-loss | `fuchsia-runtime` / `fuchsia-engine` |
-| More conditioning operators | Throttle, window, threshold-over-time to round out the existing `debounce`/`deadband`/`dedup`/`commit` set | `fuchsia-actor-builtins` |
+| More conditioning operators | Throttle, window, threshold-over-time to round out the existing `debounce`/`deadband`/`dedup` set | `fuchsia-actor-builtins` |
 | Config import for guests | Forward a `Component` node's `settings` into a Wasm/Lua guest (e.g. a `config.get(key)` import). Today only native actors read `settings`; guests receive only `ctx` + payload. | `fuchsia-actor-wasm`, `fuchsia-actor-lua` |
 | Workflow-level allowlist of actor types | Workflows declare which type names they may instantiate; the factory/provisioner rejects unknown | `fuchsia-actor`, `fuchsia-provisioner` |
 | Capability-style device binding | Bind each actor instance to one host-side device handle (BLE/MQTT/…) so guest-side functions never name addresses | host crates, per-capability WIT |

@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bson::Bson;
-
 use crate::error::ActorError;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -78,31 +76,19 @@ impl Schedule for NoopSchedule {
   fn schedule_self(&self, _after: Duration, _msg: Message) {}
 }
 
-/// Capability to write a value into an entity's state. The host hands the actor
-/// a sink already scoped to its target (backend, collection, key) — the actor
-/// calls `write` and never learns where the value lands, exactly like `emit`.
-/// Pre-scoping is what makes partitioning safe: the actor can't write outside
-/// its entity's storage because the sink doesn't permit it.
-///
-/// Takes a `Bson` (the union of scalar and document) — the caller serializes
-/// the message payload one level up, since a `dyn` trait can't carry a generic
-/// `T: Serialize` method.
-pub trait StateSink: Send + Sync {
-  fn write(&self, value: Bson) -> Result<(), ActorError>;
-}
-
 /// The per-instance capabilities a host grants an actor, **injected when the
 /// actor is built** (via [`crate::ActorCreator::create`]) — not carried on the
 /// per-call context.
 ///
-/// A typed bag, keyed by each capability's trait-object type: the engine and
-/// runtime contribute `emit` + `schedule`, the host/provisioner contributes
-/// scoped I/O capabilities (a [`StateSink`] now; http/kv/log later). An actor
-/// pulls only what it uses, so its struct declares what it can do (a debounce
-/// holds emit + schedule; a sink holds a [`StateSink`]). These are per-instance
-/// and stable for the actor's life — unlike identity, which is per-call. (Hard
-/// scoping for untrusted WASM/Lua is the WIT world; for native actors this
-/// injection point is hygiene, not enforcement.)
+/// A typed bag, keyed by each capability's trait-object type: fuchsia ships the
+/// *universal* capabilities `emit` + `schedule`, and a host inserts its own
+/// **domain** capabilities (a state sink, http, kv, …) under their own trait
+/// types via [`insert`](Self::insert) — fuchsia never needs to know those types
+/// exist. An actor pulls only what it uses, so its struct declares what it can
+/// do (a debounce holds emit + schedule). These are per-instance and stable for
+/// the actor's life — unlike identity, which is per-call. (Hard scoping for
+/// untrusted WASM/Lua is the WIT world; for native actors this injection point
+/// is hygiene, not enforcement.)
 #[derive(Default)]
 pub struct ActorCapabilities {
   // Keyed by `TypeId::of::<Arc<dyn Trait>>()`; the boxed value IS that `Arc`,
@@ -143,11 +129,6 @@ impl ActorCapabilities {
     self
   }
 
-  pub fn with_state(mut self, state: Arc<dyn StateSink>) -> Self {
-    self.insert(state);
-    self
-  }
-
   /// The emit handle — falls back to a no-op sink if none was granted, so an
   /// actor can always emit (emissions just go nowhere when unwired).
   pub fn emit(&self) -> Arc<dyn Emit> {
@@ -160,13 +141,6 @@ impl ActorCapabilities {
     self
       .get::<dyn Schedule>()
       .unwrap_or_else(|| Arc::new(NoopSchedule))
-  }
-
-  /// The state sink, if one was granted. No no-op fallback — silently dropping
-  /// state writes would hide a misconfiguration, so a writer that needs it
-  /// fails construction instead.
-  pub fn state(&self) -> Option<Arc<dyn StateSink>> {
-    self.get::<dyn StateSink>()
   }
 }
 

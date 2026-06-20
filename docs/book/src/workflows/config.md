@@ -68,16 +68,11 @@ this definition — stay invocation-agnostic.
     {
       "id": "debounce",
       "definition": { "type": "builtin", "configuration": { "name": "debounce", "settings": { "delay_ms": 500 } } }
-    },
-    {
-      "id": "commit",
-      "definition": { "type": "builtin", "configuration": { "name": "commit" } }
     }
   ],
   "edges": [
     { "from": "ingress",   "to": "normalize" },
-    { "from": "normalize", "to": "debounce"  },
-    { "from": "debounce",  "to": "commit"    }
+    { "from": "normalize", "to": "debounce"  }
   ]
 }
 ```

@@ -41,7 +41,7 @@ impl Engine {
   /// node's group lives in its `ActorId`.
   ///
   /// `caps` carries the capabilities the *caller* grants this node (e.g. a
-  /// `StateSink` from the provisioner) — empty for a plain routing node. The
+  /// host-defined state sink) — empty for a plain routing node. The
   /// engine adds the one capability it owns, `emit` (routing through this
   /// engine); the runtime adds `schedule`. The engine never inspects `caps`, so
   /// it stays binding-agnostic.

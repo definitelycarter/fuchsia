@@ -136,5 +136,5 @@ Fuchsia is deliberately minimal. The host owns:
 ## Next
 
 - [Runtime & Engine](./engine.md) — mailboxes, the handle loop, routing, lifecycle
-- [Capabilities](./host-capabilities.md) — the `emit` / `schedule` / `state` bag
+- [Capabilities](./host-capabilities.md) — the `emit` / `schedule` bag
 - [Host Extensibility](./host-extensibility.md) — adding your own capability imports

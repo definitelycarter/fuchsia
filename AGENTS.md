@@ -9,8 +9,10 @@ over `&mut self`).
 It is **handle-per-message**: the runtime owns the receive loop and calls the
 actor's `handle` per message — actors do not run their own loop. An actor's
 powers beyond receive-and-emit are a typed capability bag injected at
-construction: `emit` (the engine), `schedule` (the runtime), `state` (the
-host). Fuchsia owns one guest contract — `fuchsia:actor` (lifecycle + emit +
+construction: fuchsia ships only `emit` (the engine) and `schedule` (the
+runtime); any domain capability (a state sink, http, …) is inserted by the
+product under its own trait type. Fuchsia owns one guest contract —
+`fuchsia:actor` (lifecycle + emit +
 payload types) — and does not prescribe what else a Wasm/Lua actor may import;
 products add their own capability imports through the `WasmHost` / `LuaHost`
 seam.
@@ -21,7 +23,7 @@ Crates are layered bottom-up; each depends only on the layer below.
 
 - `crates/`
   - `fuchsia-actor` — The contract: `Actor` trait, `ActorCreator`/`ActorFactory`,
-    `ActorCapabilities` (`Emit` / `Schedule` / `StateSink`), `Message` /
+    `ActorCapabilities` (`Emit` / `Schedule`, plus the open bag for host capabilities), `Message` /
     `MessageValue`, `ActorContext`, `ActorConfig` (env + bson settings),
     `ActorId`, `ActorError`, `COMPONENT_ENV_KEY`. The lean surface actor packs
     depend on.
@@ -46,7 +48,7 @@ Crates are layered bottom-up; each depends only on the layer below.
     `add_node` / `add_edge` calls (group = workflow id). Builtin → type name;
     Component → per-runtime type (`"wasm"`/`"lua"`) + component id in `env`.
   - `fuchsia-actor-builtins` — Native builtin actors: `passthrough`,
-    `debounce`, `deadband`, `dedup`, `commit`, plus `register`.
+    `debounce`, `deadband`, `dedup`, plus `register`.
   - `fuchsia-actor-wasm` — Wasm-component-hosting actors. `WasmActor<H: WasmHost>`
     + `WasmActorCreator<H>` (one creator per `"wasm"` runtime, component
     catalog; component id from `ActorConfig.env`) + `BaseHost` (contract-only:

@@ -78,7 +78,7 @@ with plain synchronous calls.
 
 - [Overview](./architecture/overview.md) — the layered crates and the mental model
 - [Runtime & Engine](./architecture/engine.md) — mailboxes, the handle loop, routing, provisioning
-- [Capabilities](./architecture/host-capabilities.md) — the `emit` / `schedule` / `state` bag
+- [Capabilities](./architecture/host-capabilities.md) — the `emit` / `schedule` bag
 - [Host Extensibility](./architecture/host-extensibility.md) — defining your own Wasm world or Lua globals
 - [Builtins](./runtimes/builtins.md), [WebAssembly actors](./runtimes/wasm.md), [Lua actors](./runtimes/lua.md)
 - [Workflow definition & provisioning](./workflows/config.md)

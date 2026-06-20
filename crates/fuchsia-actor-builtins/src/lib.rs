@@ -1,17 +1,14 @@
 //! Native builtin actors for fuchsia.
 //!
 //! These are plain Rust `Actor` impls — no WASM or Lua in the mix — registered
-//! into an `ActorFactory` under canonical type names. They back the built-in
-//! `NodeDefinition` kinds and the conditioning operators used on the pre-write
-//! path.
+//! into an `ActorFactory` under canonical type names: `passthrough` plus the
+//! generic conditioning operators (`debounce` / `deadband` / `dedup`).
 
-mod commit;
 mod deadband;
 mod debounce;
 mod dedup;
 mod passthrough;
 
-pub use commit::{Commit, CommitCreator};
 pub use deadband::{Deadband, DeadbandCreator};
 pub use debounce::{Debounce, DebounceCreator};
 pub use dedup::{Dedup, DedupCreator};
@@ -27,7 +24,6 @@ pub fn register(factory: &mut ActorFactory) {
   factory.register("debounce", DebounceCreator);
   factory.register("deadband", DeadbandCreator);
   factory.register("dedup", DedupCreator);
-  factory.register("commit", CommitCreator);
 }
 
 /// Deserialize an operator's typed config from a node's opaque `settings`
@@ -47,7 +43,7 @@ mod tests {
   fn register_wires_every_builtin() {
     let mut factory = ActorFactory::new();
     register(&mut factory);
-    for name in ["passthrough", "debounce", "deadband", "dedup", "commit"] {
+    for name in ["passthrough", "debounce", "deadband", "dedup"] {
       assert!(factory.contains(name), "missing builtin: {name}");
     }
     // Passthrough needs no config, so it's the one we can construct here; the

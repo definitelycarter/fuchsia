@@ -35,7 +35,9 @@ impl ActorCreator for DebounceCreator {
 }
 ```
 
-Three capabilities ship in the core, contributed by three different layers.
+Fuchsia ships exactly **two** universal capabilities in the core, contributed by
+two different layers. Anything else is a *domain* capability a product inserts
+into the same bag under its own trait type (see [below](#domain-capabilities-live-in-products-not-the-core)).
 
 ### `emit` — route output downstream
 
@@ -66,33 +68,15 @@ message. Fire-and-forget (no cancellation handle): time-based operators
 re-arm on each input and ignore stale fires by tagging them. Falls back to a
 no-op if unwired.
 
-### `state` — a pre-scoped write sink
-
-```rust
-pub trait StateSink: Send + Sync {
-    fn write(&self, value: Bson) -> Result<(), ActorError>;
-}
-```
-
-Provided by the **host / provisioner**. The host hands the actor a sink already
-scoped to its target (backend, collection, key); the actor calls `write` and
-never learns where the value lands — same neighbor-ignorance as `emit`.
-Pre-scoping is what makes partitioning safe: the actor *can't* write outside its
-entity's storage because the sink doesn't permit it. Unlike `emit`/`schedule`
-there's **no no-op fallback** — silently dropping a state write would hide a
-misconfiguration, so an actor that needs it (the [`commit`](../runtimes/builtins.md)
-builtin) fails construction when it's absent.
-
 ## Who contributes what
 
 | Capability | Trait      | Contributed by            | Fallback if unwired |
 |------------|------------|---------------------------|---------------------|
 | `emit`     | `Emit`     | the engine (`RoutedEmit`) | no-op sink          |
 | `schedule` | `Schedule` | the runtime (`TokioSchedule`) | no-op timer     |
-| `state`    | `StateSink`| the host / provisioner    | **none** (returns `None`) |
 
-The split mirrors the layers: the engine owns routing, the runtime owns the
-mailbox a timer fires into, and only the host knows where state lives.
+The split mirrors the layers: the engine owns routing, and the runtime owns the
+mailbox a timer fires into.
 
 ## Logging is `tracing`, not a capability
 
@@ -109,16 +93,18 @@ to log, it exposes a log import through its own host (see
 
 ## Domain capabilities live in products, not the core
 
-Fuchsia does **not** ship HTTP, KV, MQTT, or any domain capability, and there is
-no `fuchsia-capabilities` crate. The core capability set is `emit` / `schedule`
-/ `state` — the three a dataflow conditioning pipeline genuinely needs, all
-synchronous, all host-agnostic.
+Fuchsia does **not** ship a state sink, HTTP, KV, MQTT, or any domain capability,
+and there is no `fuchsia-capabilities` crate. The core capability set is just
+`emit` / `schedule` — both synchronous, both host-agnostic — and the capability
+bag is **open**: a product adds whatever else it needs under its own trait type.
 
 Everything else is a product concern:
 
 - For a **native** actor, a capability is just an `Arc<dyn YourTrait>` the
   product puts into the bag (`ActorCapabilities::insert`) and the actor pulls
-  with `caps.get::<dyn YourTrait>()`.
+  with `caps.get::<dyn YourTrait>()`. A Home-Assistant-style product's
+  state-write sink (`StateSink`) is exactly this — defined in the product, never
+  in fuchsia.
 - For a **Wasm or Lua** actor, the capability is an *import* the product wires
   into its own `WasmHost` / `LuaHost`, exposed through a product-defined WIT
   world or Lua global.
