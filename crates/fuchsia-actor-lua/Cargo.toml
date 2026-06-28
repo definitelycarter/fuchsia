@@ -8,7 +8,7 @@ description = "Lua-script-hosting Actor implementation for fuchsia"
 fuchsia-actor = { path = "../fuchsia-actor" }
 # `vendored` builds and statically links its own native `lua` lib; if another
 # crate ever also links `lua`, the whole graph must agree on one `mlua` version.
-mlua = { version = "0.11", features = ["lua54", "send", "vendored"] }
+mlua = { version = "0.11", features = ["lua54", "send", "vendored", "async"] }
 serde_json = "1"
 tracing = "0.1"
 

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use fuchsia_actor::{ActorContext, Emit, Message, MessageValue};
+use fuchsia_actor::{ActorContext, Emit, Message, MessageValue, async_trait};
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
 
@@ -25,6 +25,10 @@ wasmtime::component::bindgen!({
   "#,
   path: "../../wit",
   world: "base-actor",
+  // Only the guest exports (setup/handle/teardown) are async — so a guest call
+  // suspends its fiber while an async host import runs. `emit` stays a sync,
+  // fire-and-forget import (no per-emit async overhead).
+  exports: { default: async },
 });
 
 use exports::fuchsia::actor::actor::Context as WitContext;
@@ -59,6 +63,7 @@ impl BaseHost {
   }
 }
 
+#[async_trait]
 impl WasmHost for BaseHost {
   type State = BaseHostState;
   type Bindings = BaseActor;
@@ -71,16 +76,16 @@ impl WasmHost for BaseHost {
     BaseHostState { emit }
   }
 
-  fn instantiate(
+  async fn instantiate(
     &self,
     store: &mut Store<Self::State>,
     component: &Component,
     linker: &Linker<Self::State>,
   ) -> wasmtime::Result<Self::Bindings> {
-    BaseActor::instantiate(store, component, linker)
+    BaseActor::instantiate_async(store, component, linker).await
   }
 
-  fn call_setup(
+  async fn call_setup(
     &self,
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
@@ -89,9 +94,10 @@ impl WasmHost for BaseHost {
     bindings
       .fuchsia_actor_actor()
       .call_setup(store, &wit_context(ctx))
+      .await
   }
 
-  fn call_handle(
+  async fn call_handle(
     &self,
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
@@ -102,9 +108,10 @@ impl WasmHost for BaseHost {
     bindings
       .fuchsia_actor_actor()
       .call_handle(store, &wit_context(ctx), &payload)
+      .await
   }
 
-  fn call_teardown(
+  async fn call_teardown(
     &self,
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
@@ -113,6 +120,7 @@ impl WasmHost for BaseHost {
     bindings
       .fuchsia_actor_actor()
       .call_teardown(store, &wit_context(ctx))
+      .await
   }
 }
 

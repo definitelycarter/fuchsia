@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fuchsia_actor::{ActorContext, Emit, Message};
+use fuchsia_actor::{ActorContext, Emit, Message, async_trait};
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
 
@@ -14,12 +14,16 @@ use wasmtime::component::{Component, Linker};
 /// crate **generic over the import set**: a product implements `WasmHost` for
 /// its own world (its own capability imports) without touching the actor.
 ///
-/// All methods are synchronous — see the [crate docs](crate) for why the
-/// `fuchsia:actor` contract needs no async.
+/// The guest-driving methods (`instantiate`, `call_setup`/`handle`/`teardown`)
+/// are `async`: the engine runs with `async_support`, so a guest call can
+/// suspend its fiber while an async host import (a product's `fetch`, say) runs,
+/// without blocking the runtime thread. Pure setup (`add_to_linker`,
+/// `initial_state`, `trap_unknown_imports`) stays synchronous.
 ///
 /// This crate ships [`BaseHost`](crate::BaseHost) for the contract-only world
 /// (just `emit`). Hosts with additional capabilities (MQTT, BLE, HTTP, …)
 /// implement `WasmHost` themselves over the bindgen output for their world.
+#[async_trait]
 pub trait WasmHost: 'static + Send + Sync {
   /// Per-actor `Store` state. Holds the downstream [`Emit`] handle (so the
   /// `emit` import callback can reach it) plus any host-specific bookkeeping
@@ -55,7 +59,7 @@ pub trait WasmHost: 'static + Send + Sync {
   fn initial_state(&self, emit: Arc<dyn Emit>) -> Self::State;
 
   /// Instantiate the component into the store using the prepared linker.
-  fn instantiate(
+  async fn instantiate(
     &self,
     store: &mut Store<Self::State>,
     component: &Component,
@@ -64,7 +68,7 @@ pub trait WasmHost: 'static + Send + Sync {
 
   /// Invoke the component's `actor.setup` export. The outer `Result` is a host
   /// trap; the inner is the component's own `result<_, string>`.
-  fn call_setup(
+  async fn call_setup(
     &self,
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
@@ -73,7 +77,7 @@ pub trait WasmHost: 'static + Send + Sync {
 
   /// Invoke the component's `actor.handle` export. The component pushes any
   /// downstream emissions through the `emit` import; nothing is returned here.
-  fn call_handle(
+  async fn call_handle(
     &self,
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,
@@ -83,7 +87,7 @@ pub trait WasmHost: 'static + Send + Sync {
 
   /// Invoke the component's `actor.teardown` export. Errors are logged and
   /// swallowed by the actor — it is shutting down regardless.
-  fn call_teardown(
+  async fn call_teardown(
     &self,
     bindings: &Self::Bindings,
     store: &mut Store<Self::State>,

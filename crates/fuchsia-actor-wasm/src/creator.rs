@@ -31,6 +31,10 @@ impl<H: WasmHost> WasmActorCreator<H> {
   pub fn new(host: H) -> Result<Self, ActorError> {
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
+    // Guest calls are driven async via the bindgen `exports: async` wrappers
+    // (`call_async`), so an async host import (e.g. a product's `fetch`) suspends
+    // the guest fiber instead of blocking the runtime thread. wasmtime 45 enables
+    // async stores without an explicit config toggle. See async-actor-contract RFC.
     let engine = Engine::new(&config)
       .map_err(|e| ActorError::Config(format!("build wasmtime engine: {e}")))?;
     Ok(Self::with_engine(engine, host))

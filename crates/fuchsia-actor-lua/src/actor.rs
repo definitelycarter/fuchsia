@@ -57,7 +57,8 @@ impl<H: LuaHost> Actor for LuaActor<H> {
     if let Ok(setup_fn) = lua.globals().get::<mlua::Function>("setup") {
       let ctx_table = build_ctx(&lua, ctx)?;
       setup_fn
-        .call::<()>(ctx_table)
+        .call_async::<()>(ctx_table)
+        .await
         .map_err(|e| ActorError::Setup(format!("lua setup: {e}")))?;
     }
 
@@ -80,7 +81,8 @@ impl<H: LuaHost> Actor for LuaActor<H> {
       .map_err(|e| ActorError::Handle(format!("lookup handle: {e}")))?;
 
     handle_fn
-      .call::<()>((ctx_table, msg_table))
+      .call_async::<()>((ctx_table, msg_table))
+      .await
       .map_err(|e| ActorError::Handle(format!("lua handle: {e}")))
   }
 
@@ -90,13 +92,15 @@ impl<H: LuaHost> Actor for LuaActor<H> {
       return Ok(());
     };
     if let Ok(teardown_fn) = lua.globals().get::<mlua::Function>("teardown") {
-      match build_ctx(lua, ctx).and_then(|c| {
-        teardown_fn
-          .call::<()>(c)
-          .map_err(|e| ActorError::Teardown(format!("lua teardown: {e}")))
-      }) {
-        Ok(()) => {}
-        Err(e) => tracing::warn!(error = %e, "lua teardown error"),
+      let result = match build_ctx(lua, ctx) {
+        Ok(c) => teardown_fn
+          .call_async::<()>(c)
+          .await
+          .map_err(|e| ActorError::Teardown(format!("lua teardown: {e}"))),
+        Err(e) => Err(e),
+      };
+      if let Err(e) = result {
+        tracing::warn!(error = %e, "lua teardown error");
       }
     }
     Ok(())

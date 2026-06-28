@@ -70,9 +70,10 @@ impl<H: WasmHost> Actor for WasmActor<H> {
     let bindings = self
       .host
       .instantiate(&mut store, &self.component, &linker)
+      .await
       .map_err(|e| ActorError::Setup(format!("instantiate component: {e}")))?;
 
-    match self.host.call_setup(&bindings, &mut store, ctx) {
+    match self.host.call_setup(&bindings, &mut store, ctx).await {
       Ok(Ok(())) => {}
       Ok(Err(msg)) => return Err(ActorError::Setup(format!("component setup: {msg}"))),
       Err(e) => return Err(ActorError::Setup(format!("trap in setup: {e}"))),
@@ -93,7 +94,7 @@ impl<H: WasmHost> Actor for WasmActor<H> {
       .as_ref()
       .ok_or_else(|| ActorError::Handle("component not instantiated".to_owned()))?;
 
-    match self.host.call_handle(bindings, store, ctx, &msg) {
+    match self.host.call_handle(bindings, store, ctx, &msg).await {
       Ok(Ok(())) => Ok(()),
       Ok(Err(msg)) => Err(ActorError::Handle(format!("component handle: {msg}"))),
       Err(e) => Err(ActorError::Handle(format!("trap in handle: {e}"))),
@@ -107,7 +108,7 @@ impl<H: WasmHost> Actor for WasmActor<H> {
       return Ok(());
     };
 
-    match self.host.call_teardown(bindings, store, ctx) {
+    match self.host.call_teardown(bindings, store, ctx).await {
       Ok(Ok(())) => {}
       Ok(Err(msg)) => tracing::warn!(error = %msg, "component teardown error"),
       Err(e) => tracing::warn!(error = %e, "trap during component teardown"),
