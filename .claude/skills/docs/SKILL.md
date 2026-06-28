@@ -13,7 +13,8 @@ This skill is for end-of-feature doc updates. It is not for writing new standalo
 
 - `README.md` — overview, highlights, quick start, layout.
 - `AGENTS.md` — coding guidelines, project structure, dev commands. Touch this whenever crate layout or workspace conventions change.
-- `docs/book/src/` — published mdBook. Canonical for architecture, actor implementations, workflows, and reference. The page set is listed in `docs/book/src/SUMMARY.md`; keep SUMMARY in sync when adding/removing a page.
+- `docs/book/src/` — published mdBook. Canonical for architecture, actor implementations, workflows, reference, and RFCs. The page set is listed in `docs/book/src/SUMMARY.md`; keep SUMMARY in sync when adding/removing a page.
+- `docs/book/src/rfcs/` — design RFCs (one page per design), registered under the `# RFCs` section of SUMMARY. Authoring and the status lifecycle are the [[rfc]] skill's job; this skill only ensures an RFC's status callout + roadmap link stay in sync when the code lands.
 - `crates/<crate>/README.md` — per-crate readmes (none currently — crate documentation lives in the mdBook `crate-map` instead).
 
 The mdBook's built output lives in `docs/book/book/` and is gitignored — never edit it; run `mdbook build` to regenerate (and to catch broken `SUMMARY.md` links).
@@ -21,12 +22,13 @@ The mdBook's built output lives in `docs/book/book/` and is gitignored — never
 ## 1. Affected-doc map
 
 Pick the docs to touch based on what the change altered. Widen when uncertain.
-The book pages that exist today: `introduction.md`; `architecture/{overview,engine,host-capabilities,host-extensibility}.md`; `runtimes/{builtins,wasm,lua}.md`; `workflows/config.md`; `reference/{crate-map,roadmap}.md`.
+The book pages that exist today: `introduction.md`; `architecture/{overview,engine,host-capabilities,host-extensibility}.md`; `runtimes/{builtins,wasm,lua}.md`; `workflows/config.md`; `reference/{crate-map,roadmap}.md`; `rfcs/index.md` plus any `rfcs/<slug>.md`.
 
 | Code area / change type                                                | Update these docs                                                                                                                     |
 |------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
 | Anything that lands a roadmap item (Features or Gaps row)              | `docs/book/src/reference/roadmap.md` (remove the row — see step 3)                                                                    |
 | Anything that adds new planned work, gap, or open question             | `docs/book/src/reference/roadmap.md` (add row to relevant table)                                                                      |
+| Code that implements / changes a design with an RFC                     | `docs/book/src/rfcs/<slug>.md` — update the `> **Status:** …` callout (and the roadmap link); see the [[rfc]] skill                    |
 | New crate, removed crate, workspace member change                      | `docs/book/src/reference/crate-map.md`, **`AGENTS.md`** (Project Structure section), root `Cargo.toml` workspace members              |
 | New trait, crate boundary change, or core architecture shift           | `docs/book/src/architecture/overview.md` plus the relevant subpage (`engine.md`, `host-capabilities.md`, `host-extensibility.md`)     |
 | Runtime loop / mailbox / routing / scheduling / capability changes     | `docs/book/src/architecture/engine.md` (runtime + transport + engine), `docs/book/src/architecture/host-capabilities.md`              |

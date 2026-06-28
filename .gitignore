@@ -2,3 +2,6 @@
 test-components/*/target
 .DS_Store
 docs/book/book/
+
+# Per-effort git worktrees (see .claude/skills/worktree) — never commit the checkout
+/.claude/worktrees/

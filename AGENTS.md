@@ -63,8 +63,8 @@ Crates are layered bottom-up; each depends only on the layer below.
   integration test. Requires `cargo component build --release`; the test and the
   example skip / print instructions if the artifact is absent.
 - `docs/book/` — Published mdBook (architecture, actor implementations,
-  reference). Canonical design documentation.
-- `.claude/skills/` — Per-skill instructions (commit, bench, docs).
+  reference, RFCs). Canonical design documentation.
+- `.claude/skills/` — Per-skill instructions (commit, bench, docs, rfc, worktree).
 
 ## Development
 
@@ -76,6 +76,19 @@ cargo fmt
 
 Benches (criterion): `cargo bench -p fuchsia-runtime --bench <name>` —
 see `.claude/skills/bench/SKILL.md` for the targeted before/after workflow.
+
+## RFCs & worktrees
+
+Substantial designs are captured as RFCs before or alongside the code, then
+implemented in an isolated worktree — the cadence used in the sibling `slate` repo.
+
+- **RFCs** live in `docs/book/src/rfcs/<slug>.md`, registered in
+  `docs/book/src/SUMMARY.md` under `# RFCs` and listed on the RFC index page. Each
+  opens with a one-line `> **Status:** …` callout and links to the roadmap. See the
+  `rfc` skill.
+- **Worktrees** for implementing an RFC live under `.claude/worktrees/<slug>/`
+  (gitignored) — an isolated checkout on its own branch so `main` stays clean and
+  efforts can run in parallel. See the `worktree` skill.
 
 ## Guidelines
 
