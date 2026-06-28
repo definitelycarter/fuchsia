@@ -84,17 +84,19 @@ impl Default for ActorFactory {
 mod tests {
   use super::*;
   use crate::actor::{Actor, ActorContext, Message};
+  use async_trait::async_trait;
 
   struct EchoActor;
 
+  #[async_trait]
   impl Actor for EchoActor {
-    fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
-    fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+    async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
       Ok(())
     }
-    fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
   }

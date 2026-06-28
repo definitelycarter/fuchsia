@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, Emit, Message,
-  MessageValue,
+  MessageValue, async_trait,
 };
 use serde::Deserialize;
 
@@ -27,12 +27,13 @@ pub struct Deadband {
   last_emitted: Option<f64>,
 }
 
+#[async_trait]
 impl Actor for Deadband {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 
-  fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     match numeric(&msg) {
       Some(value) => {
         let passes = match self.last_emitted {
@@ -50,7 +51,7 @@ impl Actor for Deadband {
     Ok(())
   }
 
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -111,24 +112,24 @@ mod tests {
     ActorContext::new("e", "n", "t")
   }
 
-  #[test]
-  fn emits_only_on_changes_at_or_above_threshold() {
+  #[tokio::test]
+  async fn emits_only_on_changes_at_or_above_threshold() {
     let (mut actor, emitted) = build(1.0);
 
-    actor.handle(&ctx(), reading(10.0)).unwrap(); // first: emits
-    actor.handle(&ctx(), reading(10.5)).unwrap(); // +0.5 < 1.0: suppressed
-    actor.handle(&ctx(), reading(11.0)).unwrap(); // +1.0 from 10.0: emits
-    actor.handle(&ctx(), reading(11.4)).unwrap(); // +0.4 from 11.0: suppressed
+    actor.handle(&ctx(), reading(10.0)).await.unwrap(); // first: emits
+    actor.handle(&ctx(), reading(10.5)).await.unwrap(); // +0.5 < 1.0: suppressed
+    actor.handle(&ctx(), reading(11.0)).await.unwrap(); // +1.0 from 10.0: emits
+    actor.handle(&ctx(), reading(11.4)).await.unwrap(); // +0.4 from 11.0: suppressed
 
     let out = emitted.lock().unwrap();
     let values: Vec<f64> = out.iter().filter_map(numeric).collect();
     assert_eq!(values, vec![10.0, 11.0]);
   }
 
-  #[test]
-  fn non_numeric_passes_through() {
+  #[tokio::test]
+  async fn non_numeric_passes_through() {
     let (mut actor, emitted) = build(1.0);
-    actor.handle(&ctx(), Message::empty("ping")).unwrap();
+    actor.handle(&ctx(), Message::empty("ping")).await.unwrap();
     assert_eq!(emitted.lock().unwrap().len(), 1);
   }
 }

@@ -4,6 +4,7 @@ mod factory;
 mod id;
 
 pub use actor::{Actor, ActorCapabilities, ActorContext, Emit, Message, MessageValue, Schedule};
+pub use async_trait::async_trait;
 pub use error::ActorError;
 pub use factory::{ActorConfig, ActorCreator, ActorFactory, COMPONENT_ENV_KEY};
 pub use id::ActorId;

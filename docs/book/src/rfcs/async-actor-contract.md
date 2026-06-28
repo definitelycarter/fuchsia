@@ -1,7 +1,9 @@
 # RFC: Async Actor Contract
 
-> **Status: proposed.** Foundational. Tracked in the
-> [roadmap](../reference/roadmap.md#features) Features table until it lands.
+> **Status: in progress — Phase 1 (async trait + runtime + native packs) landed;
+> `fuchsia-actor-wasm`/`-lua` are async signatures with synchronous bodies, real
+> async pending Phase 2.** Foundational. Tracked in the
+> [roadmap](../reference/roadmap.md#features) Features table.
 
 ## Concept
 

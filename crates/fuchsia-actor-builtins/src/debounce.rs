@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, Emit, Message,
-  MessageValue, Schedule,
+  MessageValue, Schedule, async_trait,
 };
 use serde::Deserialize;
 
@@ -50,12 +50,13 @@ pub struct Debounce {
   period: u64,
 }
 
+#[async_trait]
 impl Actor for Debounce {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 
-  fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     match msg.type_.as_str() {
       // Quiet window elapsed — emit unless a newer input re-armed since.
       FIRE if tagged(&msg) == Some(self.generation) => self.flush(),
@@ -83,7 +84,7 @@ impl Actor for Debounce {
     Ok(())
   }
 
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -192,49 +193,64 @@ mod tests {
     assert!(matches!(err, ActorError::Config(_)));
   }
 
-  #[test]
-  fn emits_latest_after_quiet_window() {
+  #[tokio::test]
+  async fn emits_latest_after_quiet_window() {
     let (mut actor, emitted, timers) = build(50);
 
-    actor.handle(&ctx(), Message::empty("reading")).unwrap();
+    actor
+      .handle(&ctx(), Message::empty("reading"))
+      .await
+      .unwrap();
     assert!(emitted.lock().unwrap().is_empty());
     assert_eq!(timers.lock().unwrap().len(), 1);
 
     let fire = timers.lock().unwrap()[0].clone();
-    actor.handle(&ctx(), fire).unwrap();
+    actor.handle(&ctx(), fire).await.unwrap();
     let out = emitted.lock().unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].type_, "reading");
   }
 
-  #[test]
-  fn newer_input_invalidates_an_older_timer() {
+  #[tokio::test]
+  async fn newer_input_invalidates_an_older_timer() {
     let (mut actor, emitted, timers) = build(50);
 
-    actor.handle(&ctx(), Message::json("a", 1.into())).unwrap();
-    actor.handle(&ctx(), Message::json("b", 2.into())).unwrap();
+    actor
+      .handle(&ctx(), Message::json("a", 1.into()))
+      .await
+      .unwrap();
+    actor
+      .handle(&ctx(), Message::json("b", 2.into()))
+      .await
+      .unwrap();
     assert_eq!(timers.lock().unwrap().len(), 2);
 
     let gen1 = timers.lock().unwrap()[0].clone();
     let gen2 = timers.lock().unwrap()[1].clone();
 
-    actor.handle(&ctx(), gen1).unwrap();
+    actor.handle(&ctx(), gen1).await.unwrap();
     assert!(emitted.lock().unwrap().is_empty());
 
-    actor.handle(&ctx(), gen2).unwrap();
+    actor.handle(&ctx(), gen2).await.unwrap();
     let out = emitted.lock().unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].type_, "b");
   }
 
-  #[test]
-  fn max_wait_emits_under_never_quiet_input() {
+  #[tokio::test]
+  async fn max_wait_emits_under_never_quiet_input() {
     let (mut actor, emitted, timers) = make(doc! { "delay_ms": 50_i64, "max_wait_ms": 200_i64 });
 
     // Two inputs, and we never replay a FIRE — simulating a stream that never
     // goes quiet, where debounce alone would starve.
-    actor.handle(&ctx(), Message::json("a", 1.into())).unwrap();
-    actor.handle(&ctx(), Message::json("b", 2.into())).unwrap();
+    actor
+      .handle(&ctx(), Message::json("a", 1.into()))
+      .await
+      .unwrap();
+    actor
+      .handle(&ctx(), Message::json("b", 2.into()))
+      .await
+      .unwrap();
     assert!(emitted.lock().unwrap().is_empty());
 
     let scheduled = timers.lock().unwrap().clone();
@@ -247,7 +263,7 @@ mod tests {
       .find(|m| m.type_ == MAXWAIT)
       .unwrap()
       .clone();
-    actor.handle(&ctx(), maxwait).unwrap();
+    actor.handle(&ctx(), maxwait).await.unwrap();
     assert_eq!(emitted.lock().unwrap().len(), 1);
     assert_eq!(emitted.lock().unwrap()[0].type_, "b");
 
@@ -259,7 +275,7 @@ mod tests {
       .find(|m| m.type_ == FIRE)
       .unwrap()
       .clone();
-    actor.handle(&ctx(), fire).unwrap();
+    actor.handle(&ctx(), fire).await.unwrap();
     assert_eq!(emitted.lock().unwrap().len(), 1);
   }
 }

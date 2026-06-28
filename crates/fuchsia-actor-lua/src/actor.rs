@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fuchsia_actor::{Actor, ActorContext, ActorError, Emit, Message, MessageValue};
+use fuchsia_actor::{Actor, ActorContext, ActorError, Emit, Message, MessageValue, async_trait};
 
 use crate::host::LuaHost;
 
@@ -33,8 +33,9 @@ impl<H: LuaHost> LuaActor<H> {
   }
 }
 
+#[async_trait]
 impl<H: LuaHost> Actor for LuaActor<H> {
-  fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
     let lua = mlua::Lua::new();
 
     self
@@ -64,7 +65,7 @@ impl<H: LuaHost> Actor for LuaActor<H> {
     Ok(())
   }
 
-  fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     let lua = self
       .lua
       .as_ref()
@@ -83,7 +84,7 @@ impl<H: LuaHost> Actor for LuaActor<H> {
       .map_err(|e| ActorError::Handle(format!("lua handle: {e}")))
   }
 
-  fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
     // Best-effort: nothing to do if setup never built the VM.
     let Some(lua) = self.lua.as_ref() else {
       return Ok(());

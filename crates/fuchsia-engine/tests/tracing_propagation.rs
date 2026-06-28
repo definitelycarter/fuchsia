@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Message,
+  async_trait,
 };
 use fuchsia_actor_builtins::PassthroughCreator;
 use fuchsia_engine::Engine;
@@ -46,15 +47,16 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Spans {
 
 /// Terminal actor that signals when it has handled a message.
 struct Sink(Arc<Notify>);
+#[async_trait]
 impl Actor for Sink {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     self.0.notify_one();
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

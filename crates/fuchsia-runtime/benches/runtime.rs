@@ -4,20 +4,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Message,
+  async_trait,
 };
 use fuchsia_runtime::Runtime;
 use tokio::sync::Notify;
 
 struct EchoActor;
 
+#[async_trait]
 impl Actor for EchoActor {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -38,15 +40,16 @@ struct NotifyingActor {
   notify: Arc<Notify>,
 }
 
+#[async_trait]
 impl Actor for NotifyingActor {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     self.notify.notify_one();
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

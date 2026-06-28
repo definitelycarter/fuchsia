@@ -75,10 +75,10 @@ impl Runtime {
     let mut actor = self.factory.create(type_name, config, &caps)?;
     let ctx = Self::context(&actor_id);
 
-    // Setup runs synchronously before the task is spawned. On failure
-    // the actor is dropped (its Drop impl releases any partial state)
-    // and nothing is registered.
-    actor.setup(&ctx).map_err(RuntimeError::Actor)?;
+    // Setup is awaited before the task is spawned. On failure the actor is
+    // dropped (its Drop impl releases any partial state) and nothing is
+    // registered.
+    actor.setup(&ctx).await.map_err(RuntimeError::Actor)?;
 
     tokio::spawn(run_actor(actor, ctx, rx));
 
@@ -124,6 +124,7 @@ impl Default for Runtime {
 }
 
 async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: MailboxRx) {
+  use tracing::Instrument;
   while let Some(delivery) = rx.recv().await {
     let Delivery {
       msg,
@@ -136,20 +137,19 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
     // it's off the hot path unless tracing is turned up.
     let span =
       tracing::debug_span!(parent: &parent, "actor.handle", node = %ctx.node_id, kind = %msg.type_);
-    let outcome = {
-      let _guard = span.enter();
-      actor.handle(&ctx, msg)
-    };
+    // `.instrument(span).await` enters the span for the duration of the async
+    // handle without holding a `!Send` span guard across the await point.
+    let outcome = actor.handle(&ctx, msg).instrument(span).await;
     ack.report(outcome);
   }
 
-  let _ = actor.teardown(&ctx);
+  let _ = actor.teardown(&ctx).await;
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use fuchsia_actor::{ActorError, ActorId, MessageValue, Schedule};
+  use fuchsia_actor::{ActorError, ActorId, MessageValue, Schedule, async_trait};
   use std::sync::Arc;
   use std::sync::Mutex;
   use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,14 +159,15 @@ mod tests {
 
   struct EchoActor;
 
+  #[async_trait]
   impl Actor for EchoActor {
-    fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
-    fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+    async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
       Ok(())
     }
-    fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
   }
@@ -207,17 +208,18 @@ mod tests {
     probe: Arc<Probe>,
   }
 
+  #[async_trait]
   impl Actor for ProbeActor {
-    fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       self.probe.setup_called.store(true, Ordering::SeqCst);
       Ok(())
     }
-    fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+    async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
       self.probe.received.lock().unwrap().push(msg);
       self.probe.notify.notify_one();
       Ok(())
     }
-    fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       self.probe.teardown_called.store(true, Ordering::SeqCst);
       self.probe.notify.notify_one();
       Ok(())
@@ -244,14 +246,15 @@ mod tests {
 
   struct FailingSetupActor;
 
+  #[async_trait]
   impl Actor for FailingSetupActor {
-    fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Err(ActorError::Setup("intentional".to_owned()))
     }
-    fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+    async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
       Ok(())
     }
-    fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
   }
@@ -498,11 +501,12 @@ mod tests {
     schedule: Arc<dyn Schedule>,
   }
 
+  #[async_trait]
   impl Actor for SchedulerProbe {
-    fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
-    fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+    async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
       match msg.type_.as_str() {
         "go" => self
           .schedule
@@ -515,7 +519,7 @@ mod tests {
       }
       Ok(())
     }
-    fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
   }

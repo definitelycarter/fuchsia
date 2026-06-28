@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Message,
+  async_trait,
 };
 use fuchsia_actor_builtins::PassthroughCreator;
 use fuchsia_engine::{Engine, EngineError};
@@ -14,11 +15,12 @@ struct NodeRecorder {
   notify: Arc<Notify>,
 }
 
+#[async_trait]
 impl Actor for NodeRecorder {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     self
       .sink
       .lock()
@@ -27,7 +29,7 @@ impl Actor for NodeRecorder {
     self.notify.notify_one();
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

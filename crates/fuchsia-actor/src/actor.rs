@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+
 use crate::error::ActorError;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -168,8 +170,9 @@ impl ActorContext {
   }
 }
 
+#[async_trait]
 pub trait Actor: Send + 'static {
-  fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
-  fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError>;
-  fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+  async fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+  async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError>;
+  async fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
 }

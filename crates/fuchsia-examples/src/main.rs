@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId,
-  COMPONENT_ENV_KEY, Message, MessageValue,
+  COMPONENT_ENV_KEY, Message, MessageValue, async_trait,
 };
 use fuchsia_actor_builtins::DedupCreator;
 use fuchsia_actor_lua::{BaseLuaHost, LuaActorCreator};
@@ -61,15 +61,16 @@ struct Printer {
   tx: UnboundedSender<Message>,
 }
 
+#[async_trait]
 impl Actor for Printer {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     let _ = self.tx.send(msg);
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

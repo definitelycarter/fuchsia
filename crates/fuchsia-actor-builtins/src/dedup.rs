@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, Emit, Message,
-  MessageValue,
+  MessageValue, async_trait,
 };
 
 /// Drops consecutive duplicate values: emits a message only when its payload
@@ -16,12 +16,13 @@ pub struct Dedup {
   last: Option<MessageValue>,
 }
 
+#[async_trait]
 impl Actor for Dedup {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 
-  fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     if self.last.as_ref() != Some(&msg.value) {
       // Retain a copy to compare against the next message before handing the
       // original downstream. Only clones on an actual change, never on a dup.
@@ -31,7 +32,7 @@ impl Actor for Dedup {
     Ok(())
   }
 
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -74,15 +75,30 @@ mod tests {
     ActorContext::new("e", "n", "t")
   }
 
-  #[test]
-  fn drops_consecutive_duplicates() {
+  #[tokio::test]
+  async fn drops_consecutive_duplicates() {
     let (mut actor, emitted) = build();
 
-    actor.handle(&ctx(), Message::json("r", 1.into())).unwrap(); // emit
-    actor.handle(&ctx(), Message::json("r", 1.into())).unwrap(); // dup: drop
-    actor.handle(&ctx(), Message::json("r", 2.into())).unwrap(); // emit
-    actor.handle(&ctx(), Message::json("r", 2.into())).unwrap(); // dup: drop
-    actor.handle(&ctx(), Message::json("r", 1.into())).unwrap(); // emit (changed)
+    actor
+      .handle(&ctx(), Message::json("r", 1.into()))
+      .await
+      .unwrap(); // emit
+    actor
+      .handle(&ctx(), Message::json("r", 1.into()))
+      .await
+      .unwrap(); // dup: drop
+    actor
+      .handle(&ctx(), Message::json("r", 2.into()))
+      .await
+      .unwrap(); // emit
+    actor
+      .handle(&ctx(), Message::json("r", 2.into()))
+      .await
+      .unwrap(); // dup: drop
+    actor
+      .handle(&ctx(), Message::json("r", 1.into()))
+      .await
+      .unwrap(); // emit (changed)
 
     let out = emitted.lock().unwrap();
     let values: Vec<i64> = out

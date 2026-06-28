@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, Emit, Message,
+  async_trait,
 };
 
 /// Forwards every message through unchanged. Useful for wiring up and debugging
@@ -11,17 +12,18 @@ pub struct Passthrough {
   emit: Arc<dyn Emit>,
 }
 
+#[async_trait]
 impl Actor for Passthrough {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 
-  fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     self.emit.emit(msg);
     Ok(())
   }
 
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -53,8 +55,8 @@ mod tests {
     }
   }
 
-  #[test]
-  fn emits_input_unchanged() {
+  #[tokio::test]
+  async fn emits_input_unchanged() {
     let sink = Arc::new(Mutex::new(Vec::new()));
     let caps = ActorCapabilities::new().with_emit(Arc::new(Capture(sink.clone())));
 
@@ -62,7 +64,7 @@ mod tests {
       .create(&ActorConfig::default(), &caps)
       .unwrap();
     let ctx = ActorContext::new("exec", "node", "task");
-    actor.handle(&ctx, Message::empty("reading")).unwrap();
+    actor.handle(&ctx, Message::empty("reading")).await.unwrap();
 
     let out = sink.lock().unwrap();
     assert_eq!(out.len(), 1);

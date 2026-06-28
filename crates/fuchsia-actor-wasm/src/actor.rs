@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fuchsia_actor::{Actor, ActorContext, ActorError, Emit, Message};
+use fuchsia_actor::{Actor, ActorContext, ActorError, Emit, Message, async_trait};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Engine, Store};
 
@@ -40,8 +40,9 @@ impl<H: WasmHost> WasmActor<H> {
   }
 }
 
+#[async_trait]
 impl<H: WasmHost> Actor for WasmActor<H> {
-  fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
     let mut linker = Linker::<H::State>::new(&self.engine);
     // Trap first on the empty linker so *every* component import (including the
     // WASI a guest drags in but never calls) becomes a trap; then let the host
@@ -82,7 +83,7 @@ impl<H: WasmHost> Actor for WasmActor<H> {
     Ok(())
   }
 
-  fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     let store = self
       .store
       .as_mut()
@@ -99,7 +100,7 @@ impl<H: WasmHost> Actor for WasmActor<H> {
     }
   }
 
-  fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError> {
     // Teardown is best-effort: if the component never instantiated (setup
     // failed) there is nothing to tear down.
     let (Some(store), Some(bindings)) = (self.store.as_mut(), self.bindings.as_ref()) else {

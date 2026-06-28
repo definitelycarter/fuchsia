@@ -9,3 +9,6 @@ fuchsia-actor = { path = "../fuchsia-actor" }
 bson        = { version = "3", features = ["serde"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

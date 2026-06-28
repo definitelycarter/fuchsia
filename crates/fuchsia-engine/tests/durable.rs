@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Message,
+  async_trait,
 };
 use fuchsia_engine::{Engine, EngineError};
 
@@ -17,15 +18,16 @@ struct OkActor {
   handled: Arc<AtomicUsize>,
 }
 
+#[async_trait]
 impl Actor for OkActor {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     self.handled.fetch_add(1, Ordering::SeqCst);
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -50,14 +52,15 @@ impl ActorCreator for OkCreator {
 
 struct ErrActor;
 
+#[async_trait]
 impl Actor for ErrActor {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     Err(ActorError::Handle("boom".to_owned()))
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -78,14 +81,15 @@ impl ActorCreator for ErrCreator {
 
 struct PanicActor;
 
+#[async_trait]
 impl Actor for PanicActor {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     panic!("actor dies mid-handle");
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
@@ -111,11 +115,12 @@ struct GatedActor {
   gate: Arc<(Mutex<bool>, Condvar)>,
 }
 
+#[async_trait]
 impl Actor for GatedActor {
-  fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
-  fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+  async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
     let (lock, cvar) = &*self.gate;
     let mut open = lock.lock().unwrap();
     while !*open {
@@ -123,7 +128,7 @@ impl Actor for GatedActor {
     }
     Ok(())
   }
-  fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
