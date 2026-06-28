@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorId};
 use fuchsia_engine::Engine;
-use fuchsia_workflow::store::{NodeDefinition, Runtime, Workflow, WorkflowId};
+use fuchsia_workflow::{NodeDefinition, Runtime, Workflow, WorkflowId};
 
 use crate::error::ProvisionerError;
 
@@ -132,7 +132,7 @@ impl Provisioner {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use fuchsia_workflow::store::{
+  use fuchsia_workflow::{
     BuiltinConfig, ComponentConfig, Edge, Node, NodeId, Runtime, Workflow, WorkflowId,
   };
 

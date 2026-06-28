@@ -6,9 +6,7 @@ use fuchsia_actor::{
 use fuchsia_actor_builtins::PassthroughCreator;
 use fuchsia_engine::Engine;
 use fuchsia_provisioner::Provisioner;
-use fuchsia_workflow::store::{
-  BuiltinConfig, Edge, Node, NodeDefinition, NodeId, Workflow, WorkflowId,
-};
+use fuchsia_workflow::{BuiltinConfig, Edge, Node, NodeDefinition, NodeId, Workflow, WorkflowId};
 use tokio::sync::Notify;
 
 struct Recorder {

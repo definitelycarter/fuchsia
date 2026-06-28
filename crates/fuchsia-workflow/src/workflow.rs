@@ -3,15 +3,15 @@ use std::fmt;
 use bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
-use super::node::{Edge, Node};
+use crate::node::{Edge, Node};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct WorkflowId(pub(crate) ObjectId);
 
 impl WorkflowId {
-  /// Mint a fresh workflow id. The store also assigns one on `create`; this is
-  /// for constructing workflows in tests or before persistence.
+  /// Mint a fresh workflow id, e.g. when authoring a workflow before it is
+  /// handed to a downstream store.
   pub fn new() -> Self {
     Self(ObjectId::new())
   }
@@ -29,8 +29,7 @@ impl fmt::Display for WorkflowId {
   }
 }
 
-/// A workflow definition: a directed graph of nodes. Always durable — the
-/// definition is config, so unlike an entity it carries no durability policy.
+/// A workflow definition: a directed graph of nodes.
 ///
 /// The graph carries no notion of what *fires* it: triggering is a consumer
 /// concern (detect an event, then `engine.push` a message into the chosen
@@ -44,16 +43,4 @@ pub struct Workflow {
   pub edges: Vec<Edge>,
   pub created_at: i64,
   pub updated_at: i64,
-}
-
-/// Input for creating a new workflow. The store assigns the id and timestamps.
-/// `Deserialize` so it's the body of `POST /workflows`; `nodes`/`edges` default
-/// to empty, so a minimal create is `{ "name" }`.
-#[derive(Debug, Deserialize)]
-pub struct NewWorkflow {
-  pub name: String,
-  #[serde(default)]
-  pub nodes: Vec<Node>,
-  #[serde(default)]
-  pub edges: Vec<Edge>,
 }

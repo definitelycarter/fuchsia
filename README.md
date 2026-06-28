@@ -125,7 +125,7 @@ cargo bench -p fuchsia-runtime --bench runtime
 - `crates/fuchsia-transport` — bounded mailbox + delivery/ack plumbing
 - `crates/fuchsia-runtime` — the handle-per-message loop; provides `schedule`
 - `crates/fuchsia-engine` — routing between actors per graph edges; provides `emit`
-- `crates/fuchsia-workflow` — persisted workflow definitions (Slate-backed)
+- `crates/fuchsia-workflow` — workflow definitions (the node graph) as serde/BSON types
 - `crates/fuchsia-provisioner` — turns stored workflows into running engine graphs
 - `crates/fuchsia-actor-builtins` — native builtin actors
 - `crates/fuchsia-actor-wasm` — Wasm-component-hosting actors

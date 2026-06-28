@@ -1,11 +1,12 @@
 # Definition & Provisioning
 
-A workflow is a persisted directed graph of nodes. `fuchsia-workflow` owns the
-stored shape (and Slate-backed CRUD); `fuchsia-provisioner` turns one into a
-running graph on the engine. You can also skip the stored form and drive the
+A workflow is a directed graph of nodes. `fuchsia-workflow` owns the definition
+shape (plain serde/BSON types); `fuchsia-provisioner` turns one into a running
+graph on the engine. Persisting a definition is a downstream product concern —
+or you can skip persistence entirely and drive the
 [engine directly](#provisioning-without-the-store).
 
-## The stored shape
+## The definition shape
 
 ```rust
 pub struct Workflow {
@@ -77,8 +78,9 @@ this definition — stay invocation-agnostic.
 }
 ```
 
-Creating one via the store takes only `{ name, nodes?, edges? }` (`NewWorkflow`);
-the store assigns the id and timestamps.
+`_id` is a BSON `ObjectId` and `created_at`/`updated_at` are epoch millis;
+whatever authors or persists the definition assigns them (`WorkflowId::new`
+mints a fresh id).
 
 ## From definition to running graph
 

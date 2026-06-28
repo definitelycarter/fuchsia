@@ -39,11 +39,13 @@ Crates are layered bottom-up; each depends only on the layer below.
     `Arc`) does `add_node` / `add_edge` / `remove_graph` / `push` over a live
     `RouterState`, and provides the `emit` capability (`RoutedEmit`). Knows
     only actors + addressing.
-  - `fuchsia-workflow` — Persisted workflow definitions + Slate-backed CRUD:
-    `Workflow` / `Node` / `NodeDefinition` (`Builtin` | `Component`),
-    `BuiltinConfig`, `ComponentConfig` (`runtime` Wasm|Lua, `component`,
-    `settings`), `Edge`. No trigger concept — what fires a workflow is a
-    consumer concern (detect the event, `engine.push` into a node).
+  - `fuchsia-workflow` — Workflow definitions (the node graph) as plain
+    serde/BSON types: `Workflow` / `Node` / `NodeDefinition` (`Builtin` |
+    `Component`), `BuiltinConfig`, `ComponentConfig` (`runtime` Wasm|Lua,
+    `component`, `settings`), `Edge`. No persistence here — storing a
+    definition is a downstream product concern. No trigger concept either —
+    what fires a workflow is a consumer concern (detect the event,
+    `engine.push` into a node).
   - `fuchsia-provisioner` — Translates a stored `Workflow` into engine
     `add_node` / `add_edge` calls (group = workflow id). Builtin → type name;
     Component → per-runtime type (`"wasm"`/`"lua"`) + component id in `env`.
@@ -56,8 +58,8 @@ Crates are layered bottom-up; each depends only on the layer below.
     needs no async.
   - `fuchsia-actor-lua` — Lua-script-hosting actors. `LuaActor<H: LuaHost>` +
     `LuaActorCreator<H>` (one creator per `"lua"` runtime, script catalog) +
-    `BaseLuaHost` (registers only `emit`). Synchronous mlua; `mlua` pinned to
-    `0.11` to match `slate-vm` (links the native `lua` lib).
+    `BaseLuaHost` (registers only `emit`). Synchronous mlua; `mlua` uses the
+    `vendored` feature (statically links its own native `lua` lib).
   - `fuchsia-examples` — Runnable demo wiring a Lua actor, a builtin, and a
     Wasm component into one engine graph (`cargo run -p fuchsia-examples`).
 - `wit/` — Ships **only** the `fuchsia:actor` package; no bundled platform

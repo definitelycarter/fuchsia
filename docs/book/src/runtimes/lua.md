@@ -108,9 +108,10 @@ registered — those are product capabilities. To add globals, write your own
 
 ## Note on the `mlua` version
 
-`mlua` is pinned to `0.11` because `slate-vm` (pulled in transitively via
-`fuchsia-workflow`) also depends on it, and `mlua` links the native `lua`
-library — only one version may appear in the dependency graph.
+`mlua` uses the `vendored` feature, which builds and statically links its own
+copy of the native `lua` library. Because that native lib can appear only once
+in a build, if another crate ever also links `lua`, the whole dependency graph
+must agree on a single `mlua` version.
 
 ## Test
 
