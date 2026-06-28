@@ -1,17 +1,18 @@
 //! Lua-script-hosting [`Actor`] implementation for fuchsia.
 //!
 //! A [`LuaActor`] drives a Lua script's lifecycle on the handle-per-message
-//! model: the runtime owns the receive loop and calls the actor's synchronous
-//! lifecycle methods, each of which calls into the persistent Lua VM. A script
-//! must define `handle(ctx, msg)`; `setup(ctx)` and `teardown(ctx)` are
-//! optional globals.
+//! model: the runtime owns the receive loop and calls the actor's async
+//! lifecycle methods, each of which drives the persistent Lua VM via mlua's
+//! `call_async`. A script must define `handle(ctx, msg)`; `setup(ctx)` and
+//! `teardown(ctx)` are optional globals.
 //!
-//! # Synchronous by design
+//! # Synchronous guest, async host
 //!
-//! The contract — lifecycle plus the `emit` global — is synchronous (emit is a
-//! non-blocking channel `offer`), so the VM is driven directly with no
-//! `block_on`. Product capabilities that are inherently async are the product
-//! host's concern, exactly as on the wasm side.
+//! The Lua *script* contract stays synchronous — authors write straight-line
+//! code. The host drives it via mlua `call_async`, so a script that calls an
+//! async host global (registered with [`mlua::Lua::create_async_function`])
+//! suspends and yields the runtime thread instead of blocking it. The `emit`
+//! global stays a synchronous, non-blocking channel `offer`.
 //!
 //! # Generic over the binding set
 //!
@@ -32,3 +33,7 @@ pub use actor::LuaActor;
 pub use base::BaseLuaHost;
 pub use creator::LuaActorCreator;
 pub use host::LuaHost;
+
+/// Re-exported so a product can implement [`LuaHost`] (whose methods take
+/// `&mlua::Lua`) without separately depending on — and version-matching — mlua.
+pub use mlua;
