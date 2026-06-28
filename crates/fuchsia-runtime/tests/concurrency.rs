@@ -65,9 +65,13 @@ async fn awaited_io_runs_concurrently_not_serially() {
   let mut rt = Runtime::new();
   rt.register("slow", SlowIoCreator { delay, done: tx });
   for i in 0..N {
-    rt.spawn(ActorId::new(format!("a{i}")), "slow", &ActorConfig::default())
-      .await
-      .unwrap();
+    rt.spawn(
+      ActorId::new(format!("a{i}")),
+      "slow",
+      &ActorConfig::default(),
+    )
+    .await
+    .unwrap();
   }
 
   let start = Instant::now();

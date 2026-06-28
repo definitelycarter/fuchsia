@@ -57,11 +57,18 @@ impl Engine {
       router: self.router.clone(),
     });
     let caps = caps.with_emit(emit);
+
+    // Prepare under the runtime lock, then run `setup` *without* the lock so a
+    // slow async setup (one that does I/O) can't serialize every other graph
+    // mutation behind the runtime mutex; finally commit under the lock.
+    let mut spawning = {
+      let mut runtime = self.runtime.lock().await;
+      runtime.prepare(id.clone(), type_name, config, caps)?
+    };
+    spawning.setup().await?;
     let (mailbox, health) = {
       let mut runtime = self.runtime.lock().await;
-      runtime
-        .spawn_with_caps(id.clone(), type_name, config, caps)
-        .await?
+      runtime.commit(spawning)?
     };
 
     self

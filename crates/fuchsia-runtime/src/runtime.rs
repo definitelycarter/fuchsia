@@ -46,25 +46,23 @@ impl Runtime {
     )
   }
 
-  /// Spawn an actor with a caller-populated capability bag, returning its
-  /// mailbox + health so the caller (the engine) can route to it. The caller
-  /// puts `emit` and any host/binding capabilities in `caps`;
-  /// `schedule` is layered in here, since it needs the mailbox this method
-  /// creates. A plain [`Runtime::spawn`] passes an empty bag.
-  pub async fn spawn_with_caps(
+  /// Build an actor and its mailbox **without** running `setup` or registering
+  /// it — the first half of a spawn. The mailbox/health exist before
+  /// construction so the scheduler can hold a weak handle to this actor's own
+  /// mailbox (timers deliver there), then the actor is built with the full
+  /// capability bundle. Pair with [`Spawning::setup`] (run *outside* any runtime
+  /// lock) and [`Runtime::commit`].
+  pub fn prepare(
     &mut self,
     actor_id: ActorId,
     type_name: &str,
     config: &ActorConfig,
     caps: ActorCapabilities,
-  ) -> Result<(MailboxTx, Arc<Health>), RuntimeError> {
+  ) -> Result<Spawning, RuntimeError> {
     if self.registry.contains(&actor_id) {
       return Err(RuntimeError::AlreadyRunning(actor_id));
     }
 
-    // The mailbox and health exist before construction so the scheduler can
-    // hold a weak handle back to this actor's own mailbox (timers deliver
-    // there). The actor is then built with the full capability bundle.
     let (tx, rx) = mailbox(32);
     let health = Arc::new(Health::default());
     let caps = caps.with_schedule(Arc::new(TokioSchedule {
@@ -72,24 +70,65 @@ impl Runtime {
       health: health.clone(),
     }));
 
-    let mut actor = self.factory.create(type_name, config, &caps)?;
+    let actor = self.factory.create(type_name, config, &caps)?;
     let ctx = Self::context(&actor_id);
 
-    // Setup is awaited before the task is spawned. On failure the actor is
-    // dropped (its Drop impl releases any partial state) and nothing is
-    // registered.
-    actor.setup(&ctx).await.map_err(RuntimeError::Actor)?;
+    Ok(Spawning {
+      actor,
+      ctx,
+      actor_id,
+      type_name: type_name.to_owned(),
+      tx,
+      rx,
+      health,
+    })
+  }
+
+  /// Spawn a prepared (and set-up) actor's receive loop and register it as a
+  /// routable target — the second half of a spawn. Re-checks for a duplicate id:
+  /// another spawn may have committed the same id while `setup` ran outside the
+  /// lock, in which case the prepared actor is dropped.
+  pub fn commit(&mut self, spawning: Spawning) -> Result<(MailboxTx, Arc<Health>), RuntimeError> {
+    let Spawning {
+      actor,
+      ctx,
+      actor_id,
+      type_name,
+      tx,
+      rx,
+      health,
+    } = spawning;
+
+    if self.registry.contains(&actor_id) {
+      return Err(RuntimeError::AlreadyRunning(actor_id));
+    }
 
     tokio::spawn(run_actor(actor, ctx, rx));
-
     self.registry.insert(ActorHandle::new(
       actor_id,
-      type_name.to_owned(),
+      type_name,
       tx.clone(),
       health.clone(),
     ));
 
     Ok((tx, health))
+  }
+
+  /// Spawn an actor end to end — [`prepare`](Self::prepare), `setup`,
+  /// [`commit`](Self::commit) — for direct callers that hold no external lock
+  /// (tests, a standalone runtime). The engine instead drives the three steps
+  /// itself so `setup` runs *outside* its runtime lock and a slow async setup
+  /// can't serialize other graph mutations.
+  pub async fn spawn_with_caps(
+    &mut self,
+    actor_id: ActorId,
+    type_name: &str,
+    config: &ActorConfig,
+    caps: ActorCapabilities,
+  ) -> Result<(MailboxTx, Arc<Health>), RuntimeError> {
+    let mut spawning = self.prepare(actor_id, type_name, config, caps)?;
+    spawning.setup().await?;
+    self.commit(spawning)
   }
 
   pub async fn deliver(&self, actor_id: &ActorId, msg: Message) -> Result<(), RuntimeError> {
@@ -120,6 +159,35 @@ impl Runtime {
 impl Default for Runtime {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+/// An actor created but not yet running, produced by [`Runtime::prepare`]: the
+/// [`Actor`] instance, its identity, and its mailbox. The caller runs
+/// [`setup`](Spawning::setup) on it **without holding any runtime lock**, then
+/// re-locks to [`Runtime::commit`] it. This is what keeps a slow async `setup`
+/// (one that does I/O) from serializing every other graph mutation behind the
+/// runtime lock.
+pub struct Spawning {
+  actor: Box<dyn Actor>,
+  ctx: ActorContext,
+  actor_id: ActorId,
+  type_name: String,
+  tx: MailboxTx,
+  rx: MailboxRx,
+  health: Arc<Health>,
+}
+
+impl Spawning {
+  /// Run the actor's `setup`. Call this *outside* any runtime lock; on failure
+  /// the `Spawning` is dropped (its actor's `Drop` releases partial state) and
+  /// nothing is registered.
+  pub async fn setup(&mut self) -> Result<(), RuntimeError> {
+    self
+      .actor
+      .setup(&self.ctx)
+      .await
+      .map_err(RuntimeError::Actor)
   }
 }
 
