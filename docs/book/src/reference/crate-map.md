@@ -12,8 +12,6 @@ they need.
 | `fuchsia-transport` | Message delivery plumbing: the bounded `mailbox` (mpsc of `Delivery`), `Delivery` (message + `Ack` + trace span), `Ack` (`Health` at-most-once / `Complete` at-least-once), `Offer`. No `Transport` trait — durability is layered in front of the channel. | `fuchsia-actor`, `tokio[sync]`, `tracing` |
 | `fuchsia-runtime` | The actor substrate. `Runtime` owns the recv→handle→ack loop (one tokio task per actor), runs the lifecycle, and provides the `schedule` capability (`TokioSchedule`). `ActorRegistry` is the live address book of `ActorHandle`s. Criterion bench under `benches/`. | `fuchsia-actor`, `fuchsia-transport`, `tokio`, `tracing`, `thiserror` |
 | `fuchsia-engine` | Routing between actors per a graph's edges. `Engine` (shareable as `Arc`) does `add_node`/`add_edge`/`remove_graph`/`push` over a live `RouterState`, and provides the `emit` capability (`RoutedEmit`). Knows only actors + addressing. | `fuchsia-actor`, `fuchsia-runtime`, `fuchsia-transport`, `tokio[sync]`, `thiserror` |
-| `fuchsia-workflow` | Workflow definitions (the node graph) as plain serde/BSON types. `Workflow`/`Node`/`NodeDefinition` (`Builtin`\|`Component`), `BuiltinConfig`, `ComponentConfig`, `Edge`. No persistence (a downstream concern); no trigger concept — what fires a workflow is a consumer concern. | `bson`, `serde` |
-| `fuchsia-provisioner` | Translates a stored `Workflow` into engine `add_node`/`add_edge` calls (group = workflow id). Maps builtin → type name, component → per-runtime type + component id in `env`. | `fuchsia-actor`, `fuchsia-engine`, `fuchsia-workflow`, `thiserror` |
 | `fuchsia-actor-builtins` | Native builtin actors: `passthrough`, `debounce`, `deadband`, `dedup`, plus `register`. | `fuchsia-actor`, `bson`, `serde`, `serde_json` |
 | `fuchsia-actor-wasm` | Wasm-component-hosting actors. `WasmActor<H: WasmHost>` + `WasmActorCreator<H>` (one creator per `"wasm"` runtime, component catalog) + `BaseHost` (contract-only). Synchronous wasmtime. | `fuchsia-actor`, `wasmtime[component-model]`, `serde_json`, `tracing` |
 | `fuchsia-actor-lua` | Lua-script-hosting actors. `LuaActor<H: LuaHost>` + `LuaActorCreator<H>` (one creator per `"lua"` runtime, script catalog) + `BaseLuaHost`. Synchronous mlua. | `fuchsia-actor`, `mlua[lua54,send,vendored]` (pinned `0.11`), `serde_json`, `tracing` |
@@ -27,8 +25,6 @@ graph TD
     Transport["fuchsia-transport<br/>(mailbox + ack)"]
     Runtime["fuchsia-runtime<br/>(handle loop + schedule)"]
     Engine["fuchsia-engine<br/>(routing + emit)"]
-    Workflow["fuchsia-workflow<br/>(stored defs)"]
-    Provisioner["fuchsia-provisioner<br/>(defs → graph)"]
     Builtins["fuchsia-actor-builtins"]
     Wasm["fuchsia-actor-wasm"]
     Lua["fuchsia-actor-lua"]
@@ -39,14 +35,13 @@ graph TD
     Actor --> Lua
     Transport --> Runtime
     Runtime --> Engine
-    Engine --> Provisioner
-    Workflow --> Provisioner
 ```
 
 `fuchsia-actor` is the only crate everyone depends on. The actor implementations
 (builtins, wasm, lua) depend on the contract and nothing else in the stack — they
-don't know about the runtime or engine. The provisioner is the top: it joins the
-stored definitions (`fuchsia-workflow`) to the live engine.
+don't know about the runtime or engine. `fuchsia-engine` sits at the top of the
+execution core; a host builds graphs directly against it (`add_node` / `add_edge`
+/ `push`).
 
 ## Test components
 

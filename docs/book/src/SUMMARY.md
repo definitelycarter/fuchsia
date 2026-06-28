@@ -15,10 +15,6 @@
 - [WebAssembly](./runtimes/wasm.md)
 - [Lua](./runtimes/lua.md)
 
-# Workflows
-
-- [Definition & Provisioning](./workflows/config.md)
-
 # Reference
 
 - [Crate Map](./reference/crate-map.md)

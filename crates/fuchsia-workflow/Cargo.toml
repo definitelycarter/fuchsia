@@ -1,9 +1,0 @@
-[package]
-name = "fuchsia-workflow"
-version.workspace = true
-edition.workspace = true
-description = "Workflow definitions (node graph) for fuchsia"
-
-[dependencies]
-bson  = { version = "3", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }

@@ -39,16 +39,6 @@ Crates are layered bottom-up; each depends only on the layer below.
     `Arc`) does `add_node` / `add_edge` / `remove_graph` / `push` over a live
     `RouterState`, and provides the `emit` capability (`RoutedEmit`). Knows
     only actors + addressing.
-  - `fuchsia-workflow` — Workflow definitions (the node graph) as plain
-    serde/BSON types: `Workflow` / `Node` / `NodeDefinition` (`Builtin` |
-    `Component`), `BuiltinConfig`, `ComponentConfig` (`runtime` Wasm|Lua,
-    `component`, `settings`), `Edge`. No persistence here — storing a
-    definition is a downstream product concern. No trigger concept either —
-    what fires a workflow is a consumer concern (detect the event,
-    `engine.push` into a node).
-  - `fuchsia-provisioner` — Translates a stored `Workflow` into engine
-    `add_node` / `add_edge` calls (group = workflow id). Builtin → type name;
-    Component → per-runtime type (`"wasm"`/`"lua"`) + component id in `env`.
   - `fuchsia-actor-builtins` — Native builtin actors: `passthrough`,
     `debounce`, `deadband`, `dedup`, plus `register`.
   - `fuchsia-actor-wasm` — Wasm-component-hosting actors. `WasmActor<H: WasmHost>`
@@ -73,7 +63,7 @@ Crates are layered bottom-up; each depends only on the layer below.
   integration test. Requires `cargo component build --release`; the test and the
   example skip / print instructions if the artifact is absent.
 - `docs/book/` — Published mdBook (architecture, actor implementations,
-  workflows, reference). Canonical design documentation.
+  reference). Canonical design documentation.
 - `.claude/skills/` — Per-skill instructions (commit, bench, docs).
 
 ## Development

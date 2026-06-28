@@ -675,18 +675,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuchsia-provisioner"
-version = "0.0.1-alpha.0"
-dependencies = [
- "fuchsia-actor",
- "fuchsia-actor-builtins",
- "fuchsia-engine",
- "fuchsia-workflow",
- "thiserror 2.0.17",
- "tokio",
-]
-
-[[package]]
 name = "fuchsia-runtime"
 version = "0.0.1-alpha.0"
 dependencies = [
@@ -706,14 +694,6 @@ dependencies = [
  "fuchsia-actor",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "fuchsia-workflow"
-version = "0.0.1-alpha.0"
-dependencies = [
- "bson",
- "serde",
 ]
 
 [[package]]

@@ -8,15 +8,8 @@ From the bottom up:
 │ Host application                                                       │
 │   registers actor creators · provisions graphs · pushes messages      │
 └───────────────────────────────┬────────────────────────────────────────┘
-                                │
-        ┌───────────────────────┴───────────────────────┐
-        ▼                                               ▼
-┌──────────────────────┐                  ┌────────────────────────────────┐
-│ fuchsia-provisioner   │  translates →    │ fuchsia-workflow                │
-│ stored workflow → graph│                  │ persisted Workflow/Node defs    │
-└───────────┬───────────┘                  └────────────────────────────────┘
-            │ drives
-            ▼
+                                │ add_node / add_edge / push
+                                ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │ fuchsia-engine — routing                                              │
 │   Engine: add_node / add_edge / push; routes each emit to the         │
@@ -70,10 +63,9 @@ instantiates an actor (through its creator) and registers its mailbox as a
 routable target; `add_edge` records that one node's emissions flow to another's
 mailbox. When an actor emits, the engine looks up that actor's successors in a
 live routing table and delivers to each. `push` injects an external event into
-one entrypoint's mailbox.
-
-A **workflow** is the persisted form of a graph (`fuchsia-workflow`), and the
-**provisioner** translates one into engine `add_node`/`add_edge` calls.
+one entrypoint's mailbox. The graph is configuration the host builds directly;
+how that configuration is authored or persisted is a product concern, not the
+runtime's.
 
 ## Why dataflow, not classic actors
 
@@ -83,7 +75,7 @@ Classic actor models (Hewitt, Erlang, Akka) have actors address each other:
 Fuchsia takes the opposite stance: topology is configuration. Actors emit; the
 graph wires them. So:
 
-- Workflow authors edit a graph definition, not Rust/Wasm/Lua.
+- Topology is edited as graph configuration, not Rust/Wasm/Lua.
 - Actors stay decoupled from any particular use case.
 - Routing changes don't require rebuilding actors — the routing table is
   mutable, so a graph can be added or torn down without re-instantiating the
@@ -114,7 +106,7 @@ registered under a type name.
 An actor's powers beyond receive-and-emit come from `ActorCapabilities`, a typed
 bag handed to its creator at construction. The engine contributes `emit`
 (routing through this engine); the runtime contributes `schedule` (a self-timer);
-the host/provisioner contributes scoped I/O like a `state` write sink. An actor
+the host contributes scoped I/O like a `state` write sink. An actor
 pulls only what it uses and stores it as a field, so its struct *is* the
 statement of what it can do. See [Capabilities](./host-capabilities.md).
 

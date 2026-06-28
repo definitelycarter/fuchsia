@@ -69,7 +69,7 @@ When adding new planned work, match the existing table shape: `| Feature | Descr
 These two are the most likely to silently drift, because nothing forces them to update:
 
 - **`README.md`** quotes the highlights and a quick-start snippet. Any user-visible capability or API shape added/removed/renamed needs to land here in the same commit — and the quick-start code must still compile against the current API.
-- **`AGENTS.md`** Project Structure mirrors the crate layout (`fuchsia-actor` → `transport` → `runtime` → `engine` → `workflow`/`provisioner`, plus `builtins`, `actor-wasm`, `actor-lua`, `examples`). If you add, remove, or rename a crate, fix that section in the same commit — it's the section that drifts most silently.
+- **`AGENTS.md`** Project Structure mirrors the crate layout (`fuchsia-actor` → `transport` → `runtime` → `engine`, plus `builtins`, `actor-wasm`, `actor-lua`, `examples`). If you add, remove, or rename a crate, fix that section in the same commit — it's the section that drifts most silently.
 
 ## 5. Commit-time integration
 

@@ -11,8 +11,8 @@ use crate::error::ActorError;
 /// A guest runtime registers *one* creator per runtime kind (e.g. `"wasm"`,
 /// `"lua"`), not one per component; the specific component a node runs is named
 /// here. It lives in `env` (host-curated) rather than `settings` (guest-opaque)
-/// because the *host* — the creator — resolves it, never the guest. The
-/// provisioner writes a `Component` node's identifier here; the creator reads it.
+/// because the *host* — the creator — resolves it, never the guest. The host
+/// writes a `Component` node's identifier here; the creator reads it.
 pub const COMPONENT_ENV_KEY: &str = "component";
 
 /// Per-instance configuration handed to an actor at construction, split by

@@ -15,8 +15,7 @@ The host:
 1. Registers **actor creators** by type name — one creator per actor *kind*
    (`"passthrough"`, `"debounce"`, `"wasm"`, `"lua"`, …).
 2. Provisions a **graph**: adds nodes (each an actor instance with config) and
-   edges. This can be done directly against the engine, or by handing a stored
-   workflow definition to the provisioner.
+   edges directly against the engine.
 3. Pushes messages into a node's mailbox. The runtime calls that actor's
    `handle`, the actor emits, and the engine routes the emission onward until
    the graph goes quiet.
@@ -77,9 +76,8 @@ with plain synchronous calls.
 ## Where To Go Next
 
 - [Overview](./architecture/overview.md) — the layered crates and the mental model
-- [Runtime & Engine](./architecture/engine.md) — mailboxes, the handle loop, routing, provisioning
+- [Runtime & Engine](./architecture/engine.md) — mailboxes, the handle loop, routing, lifecycle
 - [Capabilities](./architecture/host-capabilities.md) — the `emit` / `schedule` bag
 - [Host Extensibility](./architecture/host-extensibility.md) — defining your own Wasm world or Lua globals
 - [Builtins](./runtimes/builtins.md), [WebAssembly actors](./runtimes/wasm.md), [Lua actors](./runtimes/lua.md)
-- [Workflow definition & provisioning](./workflows/config.md)
 - [Crate map](./reference/crate-map.md) and [Roadmap](./reference/roadmap.md)

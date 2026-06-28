@@ -91,7 +91,7 @@ impl ActorCreator for PrinterCreator {
 }
 
 /// An `ActorConfig` whose `env` names the component/script the guest creator
-/// should load — exactly what the provisioner writes for a `Component` node.
+/// should load — exactly what a host writes for a `Component` node.
 fn component_config(id: &str) -> ActorConfig {
   let mut env = BTreeMap::new();
   env.insert(COMPONENT_ENV_KEY.to_owned(), id.to_owned());

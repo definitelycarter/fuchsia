@@ -9,8 +9,6 @@ members = [
   "crates/fuchsia-actor-lua",
   "crates/fuchsia-engine",
   "crates/fuchsia-examples",
-  "crates/fuchsia-workflow",
-  "crates/fuchsia-provisioner",
 ]
 
 [workspace.package]

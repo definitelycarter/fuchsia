@@ -95,7 +95,7 @@ async fn wasm_component_echoes_through_a_provisioned_graph() {
     .await;
 
   // Provision the graph: the wasm node's `component` id rides in env, exactly
-  // as the provisioner writes it for a `Component` node.
+  // as a host writes it for a `Component` node.
   let wasm_id = ActorId::scoped("wf", "wasm");
   let rec_id = ActorId::scoped("wf", "rec");
 

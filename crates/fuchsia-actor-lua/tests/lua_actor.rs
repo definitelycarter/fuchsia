@@ -88,7 +88,7 @@ async fn lua_script_echoes_through_a_provisioned_graph() {
   let lua_id = ActorId::scoped("wf", "lua");
   let rec_id = ActorId::scoped("wf", "rec");
 
-  // The script id rides in env, exactly as the provisioner writes it.
+  // The script id rides in env, exactly as a host writes it.
   let mut env = std::collections::BTreeMap::new();
   env.insert("component".to_owned(), "echo".to_owned());
   let lua_cfg = ActorConfig {

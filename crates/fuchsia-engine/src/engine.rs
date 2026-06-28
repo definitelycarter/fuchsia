@@ -11,14 +11,14 @@ use crate::router::{RoutedEmit, RouterState};
 /// Routes messages between actors according to a graph's edges.
 ///
 /// All methods take `&self` so the engine can be shared as `Arc<Engine>` —
-/// the provisioner, ingress, and scheduler each hold a clone and use it
+/// the host, ingress, and scheduler each hold a clone and use it
 /// concurrently. The router (the hot path: `push` and routing) is a plain
 /// `RwLock` with many readers; only the cold mutating paths (`register`,
 /// `add_node`, `remove_graph`) lock the runtime.
 ///
-/// The engine knows only actors and addressing — no entities, no workflow
-/// definitions. An assembler/provisioner above it translates those into the
-/// nodes and edges fed here.
+/// The engine knows only actors and addressing — not how the graph was
+/// authored. A layer above it (host code, or a downstream config loader)
+/// translates a higher-level definition into the nodes and edges fed here.
 pub struct Engine {
   runtime: Mutex<Runtime>,
   router: Arc<RwLock<RouterState>>,
