@@ -70,13 +70,13 @@ impl Actor for Debounce {
           .schedule
           .schedule_self(self.delay, tag(FIRE, self.generation));
         // Anchor one max-wait timer per pending period, at its start.
-        if let Some(max_wait) = self.max_wait {
-          if starting {
-            self.period = self.period.wrapping_add(1);
-            self
-              .schedule
-              .schedule_self(max_wait, tag(MAXWAIT, self.period));
-          }
+        if let Some(max_wait) = self.max_wait
+          && starting
+        {
+          self.period = self.period.wrapping_add(1);
+          self
+            .schedule
+            .schedule_self(max_wait, tag(MAXWAIT, self.period));
         }
       }
     }
@@ -153,13 +153,14 @@ mod tests {
     }
   }
 
-  fn make(
-    settings: Document,
-  ) -> (
+  // (actor, captured emits, captured self-scheduled timers)
+  type Harness = (
     Box<dyn Actor>,
     Arc<Mutex<Vec<Message>>>,
     Arc<Mutex<Vec<Message>>>,
-  ) {
+  );
+
+  fn make(settings: Document) -> Harness {
     let emitted = Arc::new(Mutex::new(Vec::new()));
     let timers = Arc::new(Mutex::new(Vec::new()));
     let caps = ActorCapabilities::new()
@@ -173,13 +174,7 @@ mod tests {
     (actor, emitted, timers)
   }
 
-  fn build(
-    delay_ms: i64,
-  ) -> (
-    Box<dyn Actor>,
-    Arc<Mutex<Vec<Message>>>,
-    Arc<Mutex<Vec<Message>>>,
-  ) {
+  fn build(delay_ms: i64) -> Harness {
     make(doc! { "delay_ms": delay_ms })
   }
 

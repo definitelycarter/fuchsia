@@ -20,9 +20,12 @@ use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
 
+/// Span name + optional parent id, keyed by span id.
+type SpanMap = Arc<Mutex<HashMap<u64, (String, Option<u64>)>>>;
+
 /// Records each span's name and parent id, so a test can assert ancestry.
 #[derive(Clone, Default)]
-struct Spans(Arc<Mutex<HashMap<u64, (String, Option<u64>)>>>);
+struct Spans(SpanMap);
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Spans {
   fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
