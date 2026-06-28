@@ -65,4 +65,16 @@ decision.
 
 ## Active RFCs
 
-_None yet — this section lists RFCs as they're written._
+A connected set aimed at evolving the runtime into a workflow/automation backbone.
+The first two are foundational — the rest build on them.
+
+| RFC | Status | Summary |
+|-----|--------|---------|
+| [Named Output Ports](./output-ports.md) | proposed | Multiple named outputs per actor so routing can branch (IF/Switch, error branches) instead of cloning to every successor. |
+| [Per-Message Correlation Id](./message-correlation-id.md) | proposed | A run id minted at the trigger and propagated through every hop and the guest boundary, for error and result correlation. |
+| [Async Actor Contract](./async-actor-contract.md) | proposed | `Actor` lifecycle goes `async` so handles can `.await` I/O without blocking a thread; the guest WIT stays synchronous (wasmtime drives guests async). Foundational. |
+| [Node Failure Handling](./node-failure-handling.md) | proposed | Death detection (the zombie-actor fix), per-node error policy, an error output port, retry, and a dead-letter sink. |
+| [Graceful Shutdown](./graceful-shutdown.md) | proposed | Drain-then-teardown: seal entrypoints, drain in dependency order (source → sink), run each `teardown`, bounded by a deadline, returns the force-stopped nodes. Requires a DAG. |
+| [DAG Enforcement](./dag-enforcement.md) | proposed | `add_edge` rejects cycle-creating edges — fuchsia graphs are acyclic (what lets graceful-shutdown's topological drain terminate). |
+| [Runs & Result Correlation](./runs-and-results.md) | proposed | Persistent graph; runs are correlation-tagged, fire-and-forget messages; optional async result via a respond node. |
+| [JavaScript Actor (QuickJS)](./javascript-actor.md) | proposed | Dynamic JS scripts in an embedded QuickJS interpreter (no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm stays as the hardened alternative. |

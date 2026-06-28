@@ -7,11 +7,18 @@ lands (no strikethrough).
 
 | Feature | Description | Notes |
 |---------|-------------|-------|
-| Per-actor retry policy | Configurable retries with backoff around a node's `handle`, beyond the at-least-once feeder's retry-on-loss | `fuchsia-runtime` / `fuchsia-engine` |
+| Named output ports | Multiple named outputs per actor so routing can branch (IF/Switch, error branches) instead of cloning to every successor. See [RFC](../rfcs/output-ports.md). | `fuchsia-actor`, `fuchsia-engine`, `wit` |
+| Per-message correlation id | A run id minted at the trigger and propagated through every emit/hop and the guest boundary, for error and result correlation. See [RFC](../rfcs/message-correlation-id.md). | `fuchsia-actor`, `fuchsia-transport`, `fuchsia-runtime`, `fuchsia-engine` |
+| Async actor contract | `Actor` lifecycle (`setup`/`handle`/`teardown`) becomes `async` so handles can `.await` I/O without blocking a thread; WIT stays synchronous (wasmtime drives guests async). Foundational. See [RFC](../rfcs/async-actor-contract.md). | `fuchsia-actor`, `fuchsia-runtime`, `fuchsia-actor-wasm`, `fuchsia-actor-lua` |
+| Node failure handling | Death detection (the zombie-actor fix), per-node error policy, error output port, retry, dead-letter sink. See [RFC](../rfcs/node-failure-handling.md). | `fuchsia-runtime`, `fuchsia-engine`, `fuchsia-actor` |
+| Graceful shutdown | `engine.shutdown(deadline)` — seal entrypoints, drain source → sink, run each `teardown`, deadline-bounded; requires a DAG. See [RFC](../rfcs/graceful-shutdown.md). | `fuchsia-engine`, `fuchsia-runtime` |
+| Runs & result correlation | Persistent graph; runs are correlation-tagged fire-and-forget messages; optional async result via a respond node + result sink. See [RFC](../rfcs/runs-and-results.md). | `fuchsia-engine`, host |
+| JavaScript actor (QuickJS) | Dynamic JS scripts in an embedded QuickJS interpreter (`rquickjs`, no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm is the hardened alternative. See [RFC](../rfcs/javascript-actor.md). | `fuchsia-actor-js` (new), `fuchsia-actor` |
+| Per-actor retry policy | Configurable retries with backoff around a node's `handle`, beyond the at-least-once feeder's retry-on-loss. Folded into [node failure handling](../rfcs/node-failure-handling.md). | `fuchsia-runtime` / `fuchsia-engine` |
 | More conditioning operators | Throttle, window, threshold-over-time to round out the existing `debounce`/`deadband`/`dedup` set | `fuchsia-actor-builtins` |
 | Config import for guests | Forward a `Component` node's `settings` into a Wasm/Lua guest (e.g. a `config.get(key)` import). Today only native actors read `settings`; guests receive only `ctx` + payload. | `fuchsia-actor-wasm`, `fuchsia-actor-lua` |
 | Capability-style device binding | Bind each actor instance to one host-side device handle (BLE/MQTT/…) so guest-side functions never name addresses | host crates, per-capability WIT |
-| Cycle support / defined back-edge semantics | Specify behavior for back-edges within a graph (persistent actor lifecycles already work — this is about graph shape) | `fuchsia-engine` |
+| Enforce DAG (reject cycle-creating edges) | `add_edge` rejects an edge that would create a cycle — fuchsia graphs are acyclic. Chosen over cycle support; it's what makes graceful-shutdown's topological drain terminate. See [RFC](../rfcs/dag-enforcement.md). | `fuchsia-engine` |
 | Distributed actors | Patterns + sample host code for splitting a graph across processes via transport actors | likely host docs, not core |
 
 ## Gaps
@@ -20,6 +27,7 @@ lands (no strikethrough).
 
 | Gap | Priority |
 |-----|----------|
+| A panicking `handle` silently zombifies the actor: the task dies, but its `JoinHandle` is dropped, `teardown` never runs, and the mailbox stays registered, so routed deliveries shed unobserved. No death detection. See [RFC](../rfcs/node-failure-handling.md). | High |
 | Mailbox capacity is a hardcoded `mailbox(32)` in `spawn_with_caps`; not configurable per-node or per-graph | Medium |
 | A long-running `handle` runs to completion — there is no mid-call interruption (cancellation is between messages, via mailbox close) | Medium |
 
