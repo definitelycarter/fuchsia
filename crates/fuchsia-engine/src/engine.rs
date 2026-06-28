@@ -2,8 +2,8 @@ use std::sync::{Arc, RwLock};
 
 use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorCreator, ActorId, Message};
 use fuchsia_runtime::Runtime;
-use fuchsia_transport::{Ack, Delivery};
-use tokio::sync::Mutex;
+use fuchsia_transport::{Ack, Delivery, Outcome};
+use tokio::sync::{Mutex, oneshot};
 
 use crate::error::EngineError;
 use crate::router::{RoutedEmit, RouterState};
@@ -123,6 +123,69 @@ impl Engine {
       .ok_or_else(|| EngineError::NotFound(entrypoint.clone()))?;
     let _ = mailbox.offer(Delivery::new(msg, Ack::Health(health.clone())));
     Ok(())
+  }
+
+  /// Deliver an external event into an entrypoint's mailbox and **await the
+  /// outcome of handling it** — the at-least-once ingress.
+  ///
+  /// Where [`Engine::push`] is fire-and-forget (at-most-once: a full mailbox
+  /// sheds, and its `Ok` means only "offered"), `push_durable` is for a durable
+  /// caller — e.g. a worker that has claimed a queued job under a lease and may
+  /// delete that job *only once the entrypoint has actually handled the
+  /// message*. It delivers with backpressure (the blocking [`MailboxTx::send`],
+  /// which waits for room rather than shedding) and carries an [`Ack::Complete`]
+  /// so the handle outcome is reported back here exactly once.
+  ///
+  /// The engine awaits *delivery + outcome*; it does **not** persist anything —
+  /// the job queue, lease, and claim/delete are the caller's.
+  ///
+  /// Returns:
+  /// - `Ok(())` — handled; the caller may delete the job.
+  /// - [`EngineError::NotFound`] — no such entrypoint (the workflow is gone).
+  ///   The caller drops the job; it is *not* retried.
+  /// - [`EngineError::Handle`] — handled, but the handler returned an error.
+  ///   Retriable; a persistently failing message is a poison candidate.
+  /// - [`EngineError::Undelivered`] — the mailbox was gone before the message
+  ///   could be enqueued. Transient — retry.
+  /// - [`EngineError::Lost`] — enqueued, but the outcome never came back (shed,
+  ///   or the actor died mid-handle). Transient — retry.
+  ///
+  /// **At-least-once, so duplicates are possible.** There is deliberately no
+  /// timeout here — the durable caller wraps this call in `tokio::time::timeout`
+  /// against its lease. A message that *is* handled but whose outcome doesn't
+  /// arrive before the lease expires is re-invoked, so entrypoints reached this
+  /// way must be idempotent / deduplicated.
+  ///
+  /// [`MailboxTx::send`]: fuchsia_transport::MailboxTx::send
+  pub async fn push_durable(&self, entrypoint: &ActorId, msg: Message) -> Result<(), EngineError> {
+    // Resolve the target and clone its mailbox sender, then drop the read guard
+    // *before* any `.await`. Holding a `std` RwLock guard across an await would
+    // make this future `!Send` (it could not be spawned) and would block
+    // `add_node` / `remove_graph` for the whole handle. The Complete path needs
+    // only the sender — not the health counter.
+    let mailbox = {
+      let state = self.router.read().map_err(|_| EngineError::Lock)?;
+      let (mailbox, _health) = state
+        .target(entrypoint)
+        .ok_or_else(|| EngineError::NotFound(entrypoint.clone()))?;
+      // Refcount bump on the mpsc sender so the guard can be released here.
+      mailbox.clone()
+    };
+
+    // The Complete ack reports the handle outcome back through `rx` exactly
+    // once; if it is dropped unreported (delivery shed / actor died mid-handle),
+    // `rx` observes a closed channel — the documented retry-on-loss signal.
+    let (tx, rx) = oneshot::channel::<Outcome>();
+    mailbox
+      .send(Delivery::new(msg, Ack::Complete(tx)))
+      .await
+      .map_err(|_| EngineError::Undelivered)?;
+
+    match rx.await {
+      Ok(Ok(())) => Ok(()),
+      Ok(Err(err)) => Err(EngineError::Handle(err)),
+      Err(_recv) => Err(EngineError::Lost),
+    }
   }
 }
 

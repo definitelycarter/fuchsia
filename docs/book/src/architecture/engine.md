@@ -137,6 +137,14 @@ take `&self`, so the engine is shared as `Arc<Engine>`.
   simply stop resolving (a graceful drop).
 - **`push(entrypoint, msg)`** — offers an external event into one node's mailbox
   (best-effort, at-most-once; an unknown id is `NotFound`).
+- **`push_durable(entrypoint, msg)`** — the at-least-once counterpart: an `async`
+  ingress that *sends* (backpressure, not shedding) with an `Ack::Complete` and
+  **awaits the handle outcome**. `Ok(())` means the node actually handled the
+  message, so a durable caller (a leased queue worker) can delete its job; a
+  handler error (`Handle`), a vanished mailbox (`Undelivered`), or a lost ack
+  (`Lost`) are retriable. It awaits *delivery + outcome* — it does not persist;
+  the queue, lease, and the caller-applied timeout/retry live above it, so
+  entrypoints reached this way must be idempotent.
 
 When an actor emits, `RoutedEmit` looks up the source's successors and `offer`s a
 clone of the message to each successor's mailbox. The actor stays
