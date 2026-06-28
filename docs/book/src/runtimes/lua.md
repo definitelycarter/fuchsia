@@ -2,20 +2,24 @@
 
 `fuchsia-actor-lua` hosts Lua scripts as Fuchsia actors. A `LuaActor<H>` drives a
 script's lifecycle on the handle-per-message model: the runtime owns the receive
-loop and calls the actor's synchronous `setup` / `handle` / `teardown`, each of
+loop and calls the actor's `setup` / `handle` / `teardown`, each of
 which calls into a persistent `mlua::Lua` VM. The VM is built once in `setup` and
 reused for every `handle` — globals, upvalues, and module state stay live across
 messages, until `teardown`.
 
 The shape mirrors [`fuchsia-actor-wasm`](./wasm.md) — same trait surface, same
-per-runtime creator, same synchronous contract — without WIT or bindgen.
+per-runtime creator, same synchronous *guest* contract — without WIT or bindgen.
 
-## Synchronous by design
+## Synchronous guest, async host
 
-The contract — lifecycle plus the `emit` global — is synchronous (`emit` is a
-non-blocking channel `offer`), so the VM is driven directly with **no
-`block_on`**. Capabilities that are inherently async are a product host's
-concern, exactly as on the Wasm side.
+The Lua script contract is **synchronous from the script's point of view**: a
+script author writes straight-line synchronous code, and the `emit` global is a
+synchronous call (`emit` is a non-blocking channel `offer`). The host drives
+that synchronous script through **mlua async** (`call_async`), so a guest call
+can suspend while an async host import runs and then resume. `emit` staying
+synchronous keeps the emit path cheap (a non-blocking offer); it does not mean
+the host is synchronous. Capabilities that are inherently async are a product
+host's concern, exactly as on the Wasm side.
 
 ## Generic over the binding set
 

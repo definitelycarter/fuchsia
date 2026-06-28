@@ -1,9 +1,9 @@
 # RFC: Async Actor Contract
 
-> **Status: in progress — Phase 1 (async trait + runtime + native packs) landed;
-> `fuchsia-actor-wasm`/`-lua` are async signatures with synchronous bodies, real
-> async pending Phase 2.** Foundational. Tracked in the
-> [roadmap](../reference/roadmap.md#features) Features table.
+> **Status: implemented.** The `Actor` lifecycle is async across all packs — wasm
+> drives guests via wasmtime async exports (`call_async`), lua via `mlua` async — and
+> awaited I/O in `handle` yields the runtime thread instead of blocking it.
+> Foundational. The guest WIT contract stays synchronous.
 
 ## Concept
 
@@ -131,17 +131,22 @@ Async is necessary, not sufficient, for high-concurrency through a single node.
   shipped/stable, and it would make async *guest-visible* — unnecessary. We keep sync
   WIT + host-side wasmtime async instead. Rejected for now.
 
+## Resolved
+
+- **Dyn-async mechanism** → `async-trait`, re-exported as `fuchsia_actor::async_trait`
+  (boxed futures, one alloc per call). `WasmHost`/`LuaHost` use it too.
+- **Compute-path overhead** → benched sync vs async on the runtime micro-benches:
+  roundtrip 308 ns → 336 ns (+~28 ns/handle, the `Box::pin`), spawn 751 → 865 ns.
+  Negligible for I/O-bound handles; no fast-path needed. Revisit only if an
+  ultra-hot conditioning path ever demands it.
+- **Docs / identity** → the "synchronous handle-per-message, no async bridge" framing
+  was revised across `AGENTS.md`, the intro, and the runtime/engine/wasm/lua pages
+  alongside this implementation. The *guest* contract (WIT) stays synchronous; the
+  Rust `Actor` trait is async.
+
 ## Open questions
 
-- **Dyn-async mechanism.** `async-trait` (boxed futures, one alloc/call) vs a
-  hand-written `Pin<Box<dyn Future>>` vs waiting for dyn-compatible
-  async-fn-in-trait. Pick at implementation; measure the alloc.
-- **Compute-path overhead (gate).** Benchmark the conditioning path (debounce on a
-  fast sensor) against the criterion bench; async + per-call boxing must not
-  meaningfully regress the pure-compute case, or we keep a fast path.
 - **Blocking escape hatch.** For a native capability that *can't* be made async (a
   blocking C lib), run that actor's handle on a blocking pool (`spawn_blocking`)? A
-  per-actor "blocking" flag, or leave it to the capability?
-- **Docs / identity.** Landing this revises the "synchronous handle-per-message, no
-  async bridge" framing across `AGENTS.md`, the intro, and the engine docs — update
-  them *with* the implementation, not before.
+  per-actor "blocking" flag, or leave it to the capability? Deferred until a real
+  case appears.

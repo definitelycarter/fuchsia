@@ -51,8 +51,9 @@ The actor never names a neighbor — emission is fire-and-forget and infallible
 (a full downstream mailbox sheds; see [Runtime & Engine](./engine.md)). If no
 sink was wired, `emit()` falls back to a no-op, so an actor can always emit.
 
-`emit` is **synchronous** — it's a non-blocking channel `offer`. This is what
-lets the Wasm and Lua hosts drive their guests with no async bridge.
+`emit` is **synchronous** — it's a non-blocking channel `offer`. The Wasm and
+Lua hosts drive their guests via async wasmtime / mlua, but keeping `emit` a
+synchronous offer keeps the emit path cheap on the way out.
 
 ### `schedule` — a delayed message to self
 

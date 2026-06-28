@@ -30,13 +30,19 @@ installs the subscriber).
 
 Actors do **not** run their own receive loop. The runtime owns the loop: it
 pulls one message from an actor's mailbox, calls `handle(&ctx, msg)`, records
-the outcome, and pulls the next. An actor is three synchronous methods —
+the outcome, and pulls the next. An actor is three async methods —
 `setup` once, `handle` per message, `teardown` on shutdown — over `&mut self`,
-so per-actor state is just struct fields, no locking.
+so per-actor state is just struct fields, no locking (a single task drives each
+actor, so `&mut self` is sound across `.await`). A Rust `handle` can `.await`
+I/O without blocking the runtime thread; handling is still sequential, one
+`handle` in flight per actor.
 
-Because the contract (lifecycle + `emit`) is synchronous and non-blocking,
-guest runtimes need no async bridge: the Wasm and Lua hosts drive their guests
-with plain synchronous calls.
+The *guest* contract stays synchronous: Wasm components and Lua scripts are
+written as straight-line synchronous code (the WIT lifecycle and `emit` are
+synchronous from the guest's view). The hosts now drive that synchronous guest
+through async wasmtime / mlua, so a guest call can suspend while an async host
+import runs. `emit` itself remains a synchronous, non-blocking import — that
+keeps the emit path cheap, not that there's no async on the host side.
 
 ## Goals
 

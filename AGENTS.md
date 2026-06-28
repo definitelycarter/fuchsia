@@ -3,7 +3,7 @@
 Fuchsia is an actor-based dataflow runtime. A workflow is a graph of actors;
 routing between nodes lives in the graph (configuration), not in actor code.
 Each actor is a native Rust implementation, a Wasm component, or a Lua script,
-all behind a single `Actor` trait (`setup`/`handle`/`teardown`, synchronous,
+all behind a single `Actor` trait (`setup`/`handle`/`teardown`, async,
 over `&mut self`).
 
 It is **handle-per-message**: the runtime owns the receive loop and calls the
@@ -44,11 +44,13 @@ Crates are layered bottom-up; each depends only on the layer below.
   - `fuchsia-actor-wasm` — Wasm-component-hosting actors. `WasmActor<H: WasmHost>`
     + `WasmActorCreator<H>` (one creator per `"wasm"` runtime, component
     catalog; component id from `ActorConfig.env`) + `BaseHost` (contract-only:
-    links `emit`, traps other imports). Synchronous wasmtime — the contract
-    needs no async.
+    links `emit`, traps other imports). Async wasmtime (`exports: async`,
+    `call_async`) drives the lifecycle, while the guest's WIT calls stay
+    synchronous.
   - `fuchsia-actor-lua` — Lua-script-hosting actors. `LuaActor<H: LuaHost>` +
     `LuaActorCreator<H>` (one creator per `"lua"` runtime, script catalog) +
-    `BaseLuaHost` (registers only `emit`). Synchronous mlua; `mlua` uses the
+    `BaseLuaHost` (registers only `emit`). Async mlua (`call_async`) drives the
+    lifecycle, while the guest's Lua scripts stay synchronous; `mlua` uses the
     `vendored` feature (statically links its own native `lua` lib).
   - `fuchsia-examples` — Runnable demo wiring a Lua actor, a builtin, and a
     Wasm component into one engine graph (`cargo run -p fuchsia-examples`).

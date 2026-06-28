@@ -15,16 +15,19 @@ Underneath them is `fuchsia-actor`, the contract.
 ## The contract (`fuchsia-actor`)
 
 ```rust
+#[async_trait]
 pub trait Actor: Send + 'static {
-    fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
-    fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError>;
-    fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+    async fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+    async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError>;
+    async fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
 }
 ```
 
-All three are **synchronous** and take `&mut self`. The runtime guarantees a
-single task drives one actor, so `&mut self` is sound without locking and an
-actor's state is just its fields.
+All three are **async** and take `&mut self`, so a `handle` can `.await` I/O
+without blocking the runtime thread. The runtime guarantees a single task drives
+one actor, so `&mut self` is sound without locking — even across an `.await` —
+and an actor's state is just its fields. Handling stays sequential: one `handle`
+is in flight per actor at a time.
 
 A **`Message`** is a typed payload — a `type_` discriminator plus a value:
 
@@ -92,7 +95,7 @@ room, for producers that must not drop).
    weak handle back to this same mailbox — timers deliver there).
 2. Layer the `schedule` capability into the bag (it needs the mailbox just
    created), then build the actor via its creator with the full bag.
-3. Run `setup` synchronously. On failure the actor is dropped and nothing is
+3. Await `setup`. On failure the actor is dropped and nothing is
    registered.
 4. `tokio::spawn` the recv loop and register an `ActorHandle` (id, type,
    mailbox, health) so callers can deliver to it.
@@ -103,10 +106,10 @@ The loop itself:
 while let Some(delivery) = rx.recv().await {
     let Delivery { msg, ack, span: parent } = delivery;
     let span = tracing::debug_span!(parent: &parent, "actor.handle", …);
-    let outcome = { let _g = span.enter(); actor.handle(&ctx, msg) };
+    let outcome = actor.handle(&ctx, msg).instrument(span).await;
     ack.report(outcome);
 }
-actor.teardown(&ctx);   // mailbox closed → drain → teardown
+actor.teardown(&ctx).await;   // mailbox closed → drain → teardown
 ```
 
 When every sender to the mailbox is dropped, `recv` returns `None`, the loop

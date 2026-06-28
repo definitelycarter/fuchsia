@@ -35,15 +35,17 @@ pub trait WasmHost: 'static + Send + Sync {
     fn add_to_linker(&self, linker: &mut Linker<Self::State>) -> wasmtime::Result<()>;
     fn trap_unknown_imports(&self) -> bool { true }
     fn initial_state(&self, emit: Arc<dyn Emit>) -> Self::State;
-    fn instantiate(&self, store, component, linker) -> wasmtime::Result<Self::Bindings>;
-    fn call_setup(&self, …)    -> wasmtime::Result<Result<(), String>>;
-    fn call_handle(&self, …)   -> wasmtime::Result<Result<(), String>>;
-    fn call_teardown(&self, …) -> wasmtime::Result<Result<(), String>>;
+    async fn instantiate(&self, store, component, linker) -> wasmtime::Result<Self::Bindings>;
+    async fn call_setup(&self, …)    -> wasmtime::Result<Result<(), String>>;
+    async fn call_handle(&self, …)   -> wasmtime::Result<Result<(), String>>;
+    async fn call_teardown(&self, …) -> wasmtime::Result<Result<(), String>>;
 }
 ```
 
-All methods are **synchronous** — the contract needs no async, so this crate
-uses synchronous wasmtime (no `async_support`, no `block_on`). The host owns:
+The lifecycle methods are **async** — the guest contract is synchronous, but
+this crate drives it with async wasmtime (`exports: async`, `call_async`) so a
+synchronous guest call can suspend its fiber while an async host import runs.
+The host owns:
 
 - **The WIT world** components target — the contract plugin authors compile to.
 - **The `State`** held in each `wasmtime::Store`: the downstream `Emit` handle
@@ -93,9 +95,10 @@ impl WasmHost for N8nHost {
 }
 ```
 
-If the import is inherently async (HTTP via `reqwest`), the *product* decides how
-to bridge it inside its import callback — e.g. `block_on`, or running async
-wasmtime. fuchsia's core stays synchronous; that choice is the product's.
+If the import is inherently async (HTTP via `reqwest`), the host already runs
+async wasmtime, so the *product* can wire the import as an async host function
+and `.await` it directly — the guest's synchronous call suspends its fiber while
+it runs. How the product structures that async work is the product's choice.
 
 ### Register it per runtime
 

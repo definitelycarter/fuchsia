@@ -3,20 +3,25 @@
 `fuchsia-actor-wasm` hosts WebAssembly components as Fuchsia actors. A
 `WasmActor<H>` drives a component's `fuchsia:actor` lifecycle on the
 handle-per-message model: the runtime owns the receive loop and calls the
-actor's synchronous `setup` / `handle` / `teardown`, each of which trampolines
+actor's `setup` / `handle` / `teardown`, each of which trampolines
 into the component. One `wasmtime::Store` is built per actor in `setup` and
 reused for every `handle` — connections and state opened in the component's
 `setup` stay live across messages, until `teardown`.
 
-## Synchronous by design
+## Synchronous guest, async host
 
-The `fuchsia:actor` contract — lifecycle plus the host-imported `emit` — is
-entirely synchronous (`emit` is a non-blocking channel `offer`). So this crate
-uses **synchronous** wasmtime: no `async_support`, no `block_on`, no fibers. A
-component call runs to completion on the runtime task driving it, exactly like a
-native actor's `handle`. Capabilities that are inherently async (HTTP, …) are
-*not* part of this contract — a product host wires them into its own `WasmHost`
-and decides how to bridge (see [Host Extensibility](../architecture/host-extensibility.md)).
+The `fuchsia:actor` contract is **synchronous from the guest's point of view**:
+a component author writes straight-line synchronous code, and the WIT lifecycle
+plus the host-imported `emit` are synchronous calls (`emit` is a non-blocking
+channel `offer`). What changed is the *host*: this crate drives the guest with
+**async wasmtime** — bindgen with `exports: { default: async }`,
+`instantiate_async`, and `call_async` for `setup` / `handle` / `teardown`. A
+sync-looking guest call suspends its fiber while an async host import runs,
+then resumes, so the guest never knows it yielded. `emit` staying synchronous
+keeps the emit path cheap; it does not mean the host is synchronous.
+Capabilities that are inherently async (HTTP, …) are *not* part of this contract
+— a product host wires them into its own `WasmHost` as async imports (see
+[Host Extensibility](../architecture/host-extensibility.md)).
 
 ## Generic over the import set
 
@@ -138,7 +143,7 @@ When the runtime builds and starts the actor:
    sink where the `emit` import callback can reach it.
 3. The component is instantiated into the store once; the bindings are reused for
    every lifecycle call.
-4. `setup(ctx)` runs (synchronously, inside the runtime's spawn).
+4. `setup(ctx)` is awaited (via `call_async`, inside the runtime's spawn).
 5. Per message: the `Message` is converted to a WIT `payload` and `handle(ctx,
    msg)` is called; the component pushes emissions via `emit::send` during it.
 6. On mailbox close, `teardown(ctx)` runs before the store is dropped. Teardown

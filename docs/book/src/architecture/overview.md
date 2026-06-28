@@ -43,7 +43,7 @@ the only crate every other one depends on.
 ## The mental model
 
 An **actor** implements [`fuchsia_actor::Actor`](https://docs.rs/fuchsia-actor):
-three synchronous methods over `&mut self` — `setup(ctx)` once, `handle(ctx,
+three async methods over `&mut self` — `setup(ctx)` once, `handle(ctx,
 msg)` per message, `teardown(ctx)` on shutdown. The actor receives a `Message`,
 does work, and `emit`s; it does *not* know who receives its output.
 
