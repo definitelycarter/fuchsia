@@ -75,7 +75,7 @@ The first two are foundational — the rest build on them.
 | [Async Actor Contract](./async-actor-contract.md) | proposed | `Actor` lifecycle goes `async` so handles can `.await` I/O without blocking a thread; the guest WIT stays synchronous (wasmtime drives guests async). Foundational. |
 | [Node Failure Handling](./node-failure-handling.md) | proposed | Death detection (the zombie-actor fix), per-node error policy, an error output port, retry, and a dead-letter sink. |
 | [Graceful Shutdown](./graceful-shutdown.md) | proposed | Drain-then-teardown: seal entrypoints, drain in dependency order (source → sink), run each `teardown`, bounded by a deadline, returns the force-stopped nodes. Requires a DAG. |
-| [DAG Enforcement](./dag-enforcement.md) | proposed | `add_edge` rejects cycle-creating edges — fuchsia graphs are acyclic (what lets graceful-shutdown's topological drain terminate). |
+| [DAG Enforcement](./dag-enforcement.md) | implemented | `add_edge` rejects cycle-creating edges — fuchsia graphs are acyclic (what lets graceful-shutdown's topological drain terminate). |
 | [Runs & Result Correlation](./runs-and-results.md) | proposed | Persistent graph; runs are correlation-tagged, fire-and-forget messages; optional async result via a respond node. |
 | [JavaScript Actor (QuickJS)](./javascript-actor.md) | proposed | Dynamic JS scripts in an embedded QuickJS interpreter (no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm stays as the hardened alternative. |
 | [`from_fn` Actors & Default Lifecycle](./from-fn-actors.md) | proposed | Default no-op `setup`/`teardown` so an actor is just a `handle`, plus `from_fn`/`register_fn` to write a node as a closure — no struct, impl, or creator. |

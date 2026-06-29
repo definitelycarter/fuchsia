@@ -37,8 +37,9 @@ Crates are layered bottom-up; each depends only on the layer below.
     the live `ActorHandle` address book. Criterion bench under `benches/`.
   - `fuchsia-engine` — Routing per a graph's edges. `Engine` (shareable as
     `Arc`) does `add_node` / `add_edge` / `remove_graph` / `push` over a live
-    `RouterState`, and provides the `emit` capability (`RoutedEmit`). Knows
-    only actors + addressing.
+    `RouterState`, and provides the `emit` capability (`RoutedEmit`). `add_edge`
+    rejects cycle-creating edges (self-loops and back-edges), so graphs stay
+    acyclic. Knows only actors + addressing.
   - `fuchsia-actor-builtins` — Native builtin actors: `passthrough`,
     `debounce`, `deadband`, `dedup`, the branching nodes `if` / `switch` (over a
     `Condition` enum — declarative `field`/`op`/`value` with `all`/`any`, plus a

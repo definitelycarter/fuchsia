@@ -142,8 +142,13 @@ port)` route counters). All methods take `&self`, so the engine is shared as
   default `"out"` port with many edges is the old single-output behavior. Rejects
   an edge whose `port` a `Fixed`-port source node doesn't declare
   (`EngineError::UnknownPort`); `"out"` is always allowed and `"error"` is
-  reserved for the failure branch; `Dynamic` (guest) nodes accept any port. The
-  terse **`add_default_edge(from, to)`** forwards to the `"out"` port.
+  reserved for the failure branch; `Dynamic` (guest) nodes accept any port. Also
+  rejects an edge that would close a cycle — a self-loop, or one whose target
+  already reaches its source over the existing edges (`EngineError::Cycle`, via an
+  O(V+E) reachability walk that flattens successors across all ports) — leaving
+  the table unchanged, so a running graph is always acyclic (see the
+  [DAG enforcement](../rfcs/dag-enforcement.md) RFC). The terse
+  **`add_default_edge(from, to)`** forwards to the `"out"` port.
 - **`route_counts(node, port)`** — reads the in-process route-outcome counters
   (`delivered` / `shed` / `no_route`) for one `(node, port)`. The counters are
   pre-created on the cold paths (declared + wired ports), so the routing path

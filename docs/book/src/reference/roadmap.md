@@ -16,7 +16,6 @@ lands (no strikethrough).
 | More conditioning operators | Throttle, window, threshold-over-time to round out the existing `debounce`/`deadband`/`dedup` set | `fuchsia-actor-builtins` |
 | Config import for guests | Forward a `Component` node's `settings` into a Wasm/Lua guest (e.g. a `config.get(key)` import). Today only native actors read `settings`; guests receive only `ctx` + payload. | `fuchsia-actor-wasm`, `fuchsia-actor-lua` |
 | Capability-style device binding | Bind each actor instance to one host-side device handle (BLE/MQTT/…) so guest-side functions never name addresses | host crates, per-capability WIT |
-| Enforce DAG (reject cycle-creating edges) | `add_edge` rejects an edge that would create a cycle — fuchsia graphs are acyclic. Chosen over cycle support; it's what makes graceful-shutdown's topological drain terminate. See [RFC](../rfcs/dag-enforcement.md). | `fuchsia-engine` |
 | Distributed actors | Patterns + sample host code for splitting a graph across processes via transport actors | likely host docs, not core |
 | `from_fn` actors & default lifecycle | Default no-op `setup`/`teardown` so an actor is just a `handle`; `from_fn`/`register_fn` to write a node as a closure (no struct/impl/creator). See [RFC](../rfcs/from-fn-actors.md). | `fuchsia-actor` |
 
@@ -34,7 +33,7 @@ lands (no strikethrough).
 
 | Gap | Priority |
 |-----|----------|
-| No cycle detection when adding edges; back-edge behavior is unspecified. Resolved by [DAG enforcement](../rfcs/dag-enforcement.md); the [output-ports](../rfcs/output-ports.md) loop model (loop-as-node, acyclic graph) depends on it. | Medium |
+| `add_edge` enforces acyclicity with a full reachability walk per edge (O(V+E)) — fine at workflow scale. If graphs ever grow large, switch to incremental topological maintenance (keep a topo order, check on insert). See [DAG enforcement](../rfcs/dag-enforcement.md). | Low |
 | Routing sheds on a full downstream mailbox (at-most-once) with no per-target backpressure option | Low (intentional for the conditioning path; revisit if a lossless route is needed) |
 
 ### `fuchsia-actor-wasm`

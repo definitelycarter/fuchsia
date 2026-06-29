@@ -90,6 +90,11 @@ impl Engine {
   /// source node does not declare ([`EngineError::UnknownPort`]); `"out"` is
   /// always allowed and `"error"` is reserved. A
   /// [`Dynamic`](fuchsia_actor::OutputPorts::Dynamic) source accepts any port.
+  ///
+  /// Also rejects an edge that would close a cycle — a self-loop, or an edge
+  /// whose target already reaches its source over the existing edges
+  /// ([`EngineError::Cycle`]) — leaving the graph unchanged, so a running graph
+  /// is always acyclic.
   pub fn add_edge(&self, from: ActorId, port: &str, to: ActorId) -> Result<(), EngineError> {
     self
       .router

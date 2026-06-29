@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -162,6 +162,16 @@ impl RouterState {
     to: ActorId,
   ) -> Result<(), EngineError> {
     self.validate_port(&from, port)?;
+    // Keep the graph acyclic: reject a self-loop, or an edge whose target `to`
+    // can already reach its source `from` over the existing edges — the new
+    // edge would close that path into a cycle. Checked before any mutation, so
+    // a rejected edge leaves the routing table (and the counters) unchanged.
+    // The reachability walk is O(V + E) over the current edges per `add_edge`,
+    // fine at workflow scale; incremental topological maintenance (keep a topo
+    // order, check on insert) is the scale-up path if graphs ever grow large.
+    if from == to || self.reaches(&to, &from) {
+      return Err(EngineError::Cycle { from, to });
+    }
     // Pre-create the wired port's counter (cold path) so `route` finds a
     // per-port counter for it — covers a `Dynamic` node's wired ports, which
     // `register` couldn't know about. `register` always runs before `add_edge`,
@@ -177,6 +187,32 @@ impl RouterState {
       .or_default()
       .push(Edge { to });
     Ok(())
+  }
+
+  /// Whether `start` can reach `target` by following the current edges (over
+  /// one or more hops; `start` itself does not count). A node's successors are
+  /// flattened across **all** of its output ports — each port holds its own
+  /// `Vec<Edge>` and reachability ignores which port an edge leaves by. An
+  /// iterative DFS with a visited set keeps it O(V + E) (no rework on a
+  /// fan-in/diamond) and terminating. Used by `add_edge` to reject an edge
+  /// whose target already reaches its source, which would close a cycle.
+  fn reaches<'a>(&'a self, start: &'a ActorId, target: &ActorId) -> bool {
+    let mut stack = vec![start];
+    let mut visited: HashSet<&ActorId> = HashSet::new();
+    while let Some(node) = stack.pop() {
+      let Some(ports) = self.edges.get(node) else {
+        continue;
+      };
+      for edge in ports.values().flatten() {
+        if &edge.to == target {
+          return true;
+        }
+        if visited.insert(&edge.to) {
+          stack.push(&edge.to);
+        }
+      }
+    }
+    false
   }
 
   pub(crate) fn target(&self, id: &ActorId) -> Option<&(MailboxTx, Arc<Health>)> {

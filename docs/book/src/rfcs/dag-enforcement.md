@@ -1,7 +1,8 @@
 # RFC: DAG Enforcement
 
-> **Status: proposed.** Tracked in the [roadmap](../reference/roadmap.md#features)
-> Features table until it lands.
+> **Status: implemented.** `add_edge` rejects cycle-creating edges in
+> `fuchsia-engine`; a running graph is always acyclic. See the
+> [roadmap](../reference/roadmap.md).
 
 ## Concept
 
@@ -36,16 +37,23 @@ flowchart LR
 
 ## Design
 
-**`fuchsia-engine`.** In `add_edge(from, to)`, before inserting, check whether `to`
-can already reach `from` over the existing edges (a reachability walk — DFS/BFS from
-`to`). If it can, the new edge would close a cycle:
+**`fuchsia-engine`.** In `add_edge(from, port, to)`, after the existing port
+validation and before inserting, check whether `to` can already reach `from` over
+the existing edges (a reachability walk — DFS/BFS from `to`). If it can, the new
+edge would close a cycle:
 
 ```rust
 // reject a self-loop, or an edge whose target already reaches its source
-if from == to || reaches(&edges, &to, &from) {
+if from == to || self.reaches(&to, &from) {
     return Err(EngineError::Cycle { from, to });
 }
 ```
+
+The routing table is nested by source then port
+(`HashMap<ActorId, HashMap<Port, Vec<Edge>>>`), so `reaches` flattens a node's
+successors **across all of its ports** — reachability ignores which port an edge
+leaves by. It is an iterative DFS over a visited set (O(V + E), terminating), done
+before any mutation so a rejected edge leaves the table unchanged.
 
 Add an `EngineError::Cycle { from: ActorId, to: ActorId }` variant. Because `add_edge`
 is already fallible, callers that already `?` it need no change beyond handling the new

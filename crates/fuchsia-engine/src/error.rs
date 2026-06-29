@@ -18,6 +18,13 @@ pub enum EngineError {
   /// [`Fixed`]: fuchsia_actor::OutputPorts::Fixed
   #[error("node {node} has no output port {port:?}")]
   UnknownPort { node: ActorId, port: String },
+  /// `add_edge` only: the edge would close a cycle — either a self-loop
+  /// (`from == to`) or an edge whose target `to` already reaches its source
+  /// `from` over the existing edges. Fuchsia graphs are acyclic, so the edge is
+  /// rejected and the graph left unchanged. See the
+  /// [DAG enforcement](../rfcs/dag-enforcement.md) RFC.
+  #[error("edge {from} -> {to} would create a cycle")]
+  Cycle { from: ActorId, to: ActorId },
   /// `push_durable` only: the entrypoint handled the message but its handler
   /// returned an error — retriable, though a persistent failure is a poison
   /// candidate the caller may dead-letter.
