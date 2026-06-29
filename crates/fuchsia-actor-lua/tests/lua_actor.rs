@@ -95,7 +95,7 @@ async fn lua_script_echoes_through_a_provisioned_graph() {
   env.insert("component".to_owned(), "echo".to_owned());
   let lua_cfg = ActorConfig {
     env,
-    settings: Default::default(),
+    ..Default::default()
   };
 
   engine
@@ -189,7 +189,7 @@ async fn lua_emit_to_routes_per_named_port() {
   env.insert("component".to_owned(), "branch".to_owned());
   let lua_cfg = ActorConfig {
     env,
-    settings: Default::default(),
+    ..Default::default()
   };
 
   engine
@@ -330,7 +330,7 @@ async fn lua_guest_reads_the_run_correlation_id() {
   env.insert("component".to_owned(), "exec".to_owned());
   let lua_cfg = ActorConfig {
     env,
-    settings: Default::default(),
+    ..Default::default()
   };
 
   engine

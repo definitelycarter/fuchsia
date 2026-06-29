@@ -4,6 +4,7 @@ use bson::Document;
 
 use crate::actor::{Actor, ActorCapabilities};
 use crate::error::ActorError;
+use crate::failure::FailurePolicy;
 
 /// Reserved [`ActorConfig::env`] key under which a per-runtime guest creator
 /// (wasm/lua) finds the identity of the component/script to load.
@@ -24,10 +25,24 @@ pub const COMPONENT_ENV_KEY: &str = "component";
 /// - `settings` is **opaque to the host** and meaningful only to the actor — an
 ///   operator's delay, a component's schema-validated config. The actor
 ///   deserializes its own typed view from it.
+/// - `failure` is **host-understood** like `env`: a typed [`FailurePolicy`] the
+///   runtime's run loop reads to decide what to do when `handle` returns `Err`
+///   (continue / fail / retry). The actor never sees it. Its [`Default`] is
+///   today's behavior (count + drop), so an unset policy changes nothing.
+///
+/// More host-understood policy fields are coming (the RFC adds a `restart`
+/// policy and a `poison_after` threshold in later slices). To keep adding them
+/// non-breaking, **construct with `..Default::default()`** — every site already
+/// does, so a new field defaults in for free. (Not `#[non_exhaustive]`: that
+/// would forbid the `..Default::default()` record-update form for any
+/// cross-crate constructor — including this workspace's own builtins/examples —
+/// forcing a mutate-after-`default()` dance everywhere; the spread convention
+/// gives the same forward-compat without that churn.)
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ActorConfig {
   pub env: BTreeMap<String, String>,
   pub settings: Document,
+  pub failure: FailurePolicy,
 }
 
 /// The output ports a node advertises — its *interface*, computed from the

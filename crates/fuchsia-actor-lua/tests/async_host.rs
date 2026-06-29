@@ -52,7 +52,7 @@ fn config(script: &str) -> ActorConfig {
   env.insert(COMPONENT_ENV_KEY.to_owned(), script.to_owned());
   ActorConfig {
     env,
-    settings: Default::default(),
+    ..Default::default()
   }
 }
 

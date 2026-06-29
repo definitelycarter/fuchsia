@@ -105,7 +105,7 @@ async fn wasm_component_echoes_through_a_provisioned_graph() {
   env.insert("component".to_owned(), "echo".to_owned());
   let wasm_cfg = ActorConfig {
     env,
-    settings: Default::default(),
+    ..Default::default()
   };
 
   engine
