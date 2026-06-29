@@ -515,11 +515,16 @@ async fn run_incarnation(
           }
           Err(_panic) => {
             // `ack` was moved into `handle_with_policy` and dropped on the
-            // unwind, so it is already unreported (lost). Discard the actor and
-            // restart — no teardown on the poisoned instance. Carry the crashing
-            // delivery's `attempts` so the supervisor charges the budget only on
-            // a first attempt (mechanism B): a re-delivery crash is the message's
-            // fault, not the node's, so it spares the budget.
+            // unwind, so it is already unreported (lost). Record the crash so this
+            // otherwise-silent loss is observable: a *transient* rebuild bumps no
+            // `died`, so without this a flapping node would look healthy and the
+            // dropped in-flight at-most-once delivery would vanish uncounted. Then
+            // discard the actor and restart — no teardown on the poisoned
+            // instance. Carry the crashing delivery's `attempts` so the supervisor
+            // charges the budget only on a first attempt (mechanism B): a
+            // re-delivery crash is the message's fault, not the node's, so it
+            // spares the budget.
+            health.record_crash();
             tracing::error!(node = %recipe.node, attempts, "handle panicked; restarting node");
             return Incarnation::Panicked { attempts };
           }

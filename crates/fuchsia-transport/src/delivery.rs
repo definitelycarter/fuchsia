@@ -30,12 +30,22 @@ pub type Outcome = Result<(), ActorError>;
 /// only on the *fallback* path where no dead-letter sink absorbed the poison
 /// (the sink path records it on the sink instead), so a rising `poisoned` count
 /// surfaces poison drops that nothing else captured.
+///
+/// `crashed` counts a node's caught **panics** on the restart path: a
+/// restart-enabled node whose `handle` panics is caught (`catch_unwind`) and
+/// rebuilt, and the in-flight delivery is dropped. A *transient* rebuild records
+/// no `died` (the node lives on), so without this a flapping node would look
+/// healthy and its dropped at-most-once delivery would vanish uncounted.
+/// `crashed` makes both observable — each bump is one caught panic and one
+/// dropped in-flight delivery; a panic that also exhausts the restart budget
+/// bumps `crashed` *and* `died`.
 #[derive(Debug, Default)]
 pub struct Health {
   handled: AtomicU64,
   errored: AtomicU64,
   died: AtomicU64,
   poisoned: AtomicU64,
+  crashed: AtomicU64,
 }
 
 impl Health {
@@ -67,6 +77,16 @@ impl Health {
     self.poisoned.fetch_add(1, Ordering::Relaxed);
   }
 
+  /// Record one caught **panic** on the restart path: a restart-enabled node's
+  /// `handle` panicked, the supervisor caught it (`catch_unwind`) and will
+  /// rebuild (or, on the final one, let the node die), and the in-flight delivery
+  /// was dropped. Bumped once per caught panic — distinct from `died` (permanent
+  /// death) so a *transient* restart is observable and the dropped at-most-once
+  /// delivery is accounted for.
+  pub fn record_crash(&self) {
+    self.crashed.fetch_add(1, Ordering::Relaxed);
+  }
+
   pub fn handled(&self) -> u64 {
     self.handled.load(Ordering::Relaxed)
   }
@@ -87,6 +107,14 @@ impl Health {
   /// one whose poison was absorbed by a dead-letter sink.
   pub fn poisoned(&self) -> u64 {
     self.poisoned.load(Ordering::Relaxed)
+  }
+
+  /// How many caught panics this node has had on the restart path (each one a
+  /// dropped in-flight delivery). `0` for a node that has never panicked; it
+  /// rises with every transient rebuild, so a flapping node shows up here even
+  /// while it keeps serving.
+  pub fn crashed(&self) -> u64 {
+    self.crashed.load(Ordering::Relaxed)
   }
 }
 

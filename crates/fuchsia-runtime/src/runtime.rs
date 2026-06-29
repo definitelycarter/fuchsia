@@ -1438,6 +1438,56 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn transient_restart_is_observable_as_a_crash_not_a_death() {
+    use fuchsia_actor::{Backoff, FailurePolicy};
+    use std::time::Duration;
+    // A restart-enabled node whose `handle` panics is caught and rebuilt (a
+    // *transient* restart). The crash must be observable on `Health::crashed`,
+    // accounting for the dropped in-flight delivery, while `died` stays 0 — the
+    // node lived on. Without this counter a flapping node would look healthy.
+    let mut rt = Runtime::new();
+    rt.register("panic", PanicCreator);
+    let (dead, _notify) = record_deaths(&mut rt);
+
+    let config = ActorConfig {
+      failure: FailurePolicy::restart(3, Backoff::fixed(Duration::from_millis(1))),
+      ..Default::default()
+    };
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(actor_id("a"), "panic", &config, ActorCapabilities::new())
+      .await
+      .unwrap();
+    drop(tx);
+
+    // Each delivered message is one caught panic → one transient rebuild, and
+    // `crashed` rises with each — a flapping node is visible even while it serves.
+    for n in 1u64..=2 {
+      rt.deliver(&actor_id("a"), Message::empty("boom"))
+        .await
+        .unwrap();
+      let mut ok = false;
+      for _ in 0..200 {
+        if health.crashed() == n {
+          ok = true;
+          break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+      }
+      assert!(ok, "transient restart #{n} must bump Health::crashed");
+      // Each is a transient rebuild, not a death — the node lives on.
+      assert_eq!(health.died(), 0, "a transient rebuild is not a death");
+      assert!(
+        dead.lock().unwrap().is_empty(),
+        "no death listener fires on a rebuild"
+      );
+      assert!(
+        rt.registry_contains(&actor_id("a")).unwrap(),
+        "the node rebuilt and still resolves"
+      );
+    }
+  }
+
+  #[tokio::test]
   async fn normal_stop_runs_teardown_and_is_not_a_death() {
     let probe = Probe::new();
     let mut rt = Runtime::new();
