@@ -333,7 +333,7 @@ mod tests {
       .create("tap", &ActorConfig::default(), &caps)
       .unwrap();
     actor
-      .handle(&ActorContext::new("e", "n", "t"), Message::empty("reading"))
+      .handle(&ActorContext::new("e", "n", 1), Message::empty("reading"))
       .await
       .unwrap();
 

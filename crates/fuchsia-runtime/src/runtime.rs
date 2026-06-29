@@ -45,9 +45,12 @@ impl Runtime {
     // identity that every per-message context shares (an `Arc::clone` — a
     // refcount bump, not a re-allocation); we allocate the `Arc<str>` once here.
     let id: Arc<str> = Arc::from(actor_id.to_string());
-    // Refcount bumps of the one allocation — the spawn-time context is built once
-    // per actor, so the cost is negligible; the three fields share storage.
-    ActorContext::new(id.clone(), id.clone(), id)
+    // Refcount bump of the one allocation — the spawn-time context is built once
+    // per actor, so the cost is negligible; the two string ids share storage.
+    // `task_id` is a placeholder `0` here: this base context is never handed to a
+    // `handle` (each delivery rebuilds it with a fresh counter); it only seeds
+    // `setup`/`teardown`, where "this handling" has no meaning.
+    ActorContext::new(id.clone(), id, 0)
   }
 
   /// Build an actor and its mailbox **without** running `setup` or registering
@@ -232,8 +235,10 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
     // Both shared ids are `Arc<str>` refcount bumps, not allocations:
     // `execution_id` is the correlation's inner arc (taken *now*, before
     // `correlation.scope(...)` below moves the correlation), and `node_id` is an
-    // `Arc::clone` of the actor's stable id. Only `task_id` is a genuine fresh
-    // allocation — the one id with no stable source to share.
+    // `Arc::clone` of the actor's stable id. `task_id` is a bare `u64` counter —
+    // no allocation either; the `"task-N"` string is rendered lazily, only if a
+    // guest host reads it (`ActorContext::task_label`). So the per-message
+    // context build now allocates nothing.
     let execution_id = correlation.as_arc(); // refcount bump, before the move below
     let node_id = Arc::clone(&ctx.node_id); // refcount bump of the stable spawn-time id
     let msg_ctx = ActorContext::new(execution_id, node_id, next_task_id());
@@ -252,11 +257,12 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
 }
 
 /// A fresh, process-unique task id for one `handle` invocation. Monotonic, so
-/// each message's `task_id` is distinct. This is the single genuine per-message
-/// allocation in the context (the other two ids are shared `Arc<str>`s).
-fn next_task_id() -> Arc<str> {
+/// each message's `task_id` is distinct. A bare `u64` — no allocation; the
+/// guest-visible `"task-N"` string is rendered lazily (`ActorContext::task_label`)
+/// only when a host actually reads it.
+fn next_task_id() -> u64 {
   static NEXT: AtomicU64 = AtomicU64::new(1);
-  Arc::from(format!("task-{}", NEXT.fetch_add(1, Ordering::Relaxed)))
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 #[cfg(test)]

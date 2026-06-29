@@ -165,36 +165,53 @@ impl ActorCapabilities {
 /// context record (execution-id, node-id, task-id). Just *who / which run*;
 /// capabilities are injected separately, at construction.
 ///
-/// The ids are `Arc<str>` rather than `String` because the runtime rebuilds this
-/// context **per message of every actor**, and two of the three ids have a
-/// stable source it can share rather than re-allocate: `execution_id` from the
-/// delivery's correlation, `node_id` from the actor's stable spawn-time id. With
-/// `Arc<str>` those per-message copies are refcount bumps, not allocations.
-/// (Only `task_id` is freshly minted per message.) This matches the principle
-/// the output-ports RFC set for `Arc<str>` — worth it precisely when cloned per
-/// message.
+/// The string ids (`execution_id`, `node_id`) are `Arc<str>` rather than
+/// `String` because the runtime rebuilds this context **per message of every
+/// actor**, and both have a stable source it can share rather than re-allocate:
+/// `execution_id` from the delivery's correlation, `node_id` from the actor's
+/// stable spawn-time id. With `Arc<str>` those per-message copies are refcount
+/// bumps, not allocations. This matches the principle the output-ports RFC set
+/// for `Arc<str>` — worth it precisely when cloned per message.
+///
+/// `task_id` ("this handling") is a raw `u64` monotonic counter, not a string:
+/// it's the one id with no stable source to share, so a string would be a fresh
+/// allocation on every message — yet nothing in the runtime consumes it for
+/// correctness (it's never compared or routed on, only surfaced into the guest
+/// context tables). A `u64` is just an increment; the `"task-N"` string is
+/// rendered lazily, only at the guest boundary that needs one (see
+/// [`ActorContext::task_label`]), so native actors that never read it pay
+/// nothing.
 #[derive(Clone, Debug)]
 pub struct ActorContext {
   pub execution_id: Arc<str>,
   pub node_id: Arc<str>,
-  pub task_id: Arc<str>,
+  pub task_id: u64,
 }
 
 impl ActorContext {
-  /// Build a context. Accepts anything convertible to `Arc<str>`, so callers can
-  /// pass `&str` literals (tests), an owned `String`, or — the hot path — an
-  /// already-shared `Arc<str>` (correlation / node id), where the conversion is
-  /// a refcount bump rather than an allocation.
+  /// Build a context. The string ids accept anything convertible to `Arc<str>`,
+  /// so callers can pass `&str` literals (tests), an owned `String`, or — the
+  /// hot path — an already-shared `Arc<str>` (correlation / node id), where the
+  /// conversion is a refcount bump rather than an allocation. `task_id` is the
+  /// raw per-message counter (no allocation).
   pub fn new(
     execution_id: impl Into<Arc<str>>,
     node_id: impl Into<Arc<str>>,
-    task_id: impl Into<Arc<str>>,
+    task_id: u64,
   ) -> Self {
     Self {
       execution_id: execution_id.into(),
       node_id: node_id.into(),
-      task_id: task_id.into(),
+      task_id,
     }
+  }
+
+  /// The guest-visible task label: the `task_id` counter rendered as `"task-N"`.
+  /// This is the *only* place the string is materialised — call it at the guest
+  /// boundary (Lua/Wasm context tables) where a `String` is required anyway; the
+  /// native hot path leaves `task_id` as a bare `u64`.
+  pub fn task_label(&self) -> String {
+    format!("task-{}", self.task_id)
   }
 }
 

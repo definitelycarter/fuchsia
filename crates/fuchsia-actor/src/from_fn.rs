@@ -153,7 +153,7 @@ mod tests {
   }
 
   fn ctx() -> ActorContext {
-    ActorContext::new("exec", "node", "task")
+    ActorContext::new("exec", "node", 1)
   }
 
   #[tokio::test]

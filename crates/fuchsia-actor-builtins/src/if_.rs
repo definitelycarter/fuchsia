@@ -101,7 +101,7 @@ mod tests {
   }
 
   fn ctx() -> ActorContext {
-    ActorContext::new("e", "n", "t")
+    ActorContext::new("e", "n", 1)
   }
 
   #[test]

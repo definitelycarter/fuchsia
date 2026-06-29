@@ -139,13 +139,14 @@ impl wasmtime::component::HasData for HasBaseHostState {
 fn wit_context(ctx: &ActorContext) -> WitContext {
   // The WIT context record has `string` fields, so the guest boundary is
   // necessarily neutral here: an owned `String` per id is unavoidable for the
-  // binding regardless of the host-side type. (`ActorContext`'s ids are now
-  // `Arc<str>`; the allocation win from that lives in the runtime's per-message
-  // context, not at this guest copy.)
+  // binding regardless of the host-side type. The string ids are `Arc<str>`;
+  // `task_id` is a `u64` counter on the host, rendered to its guest-visible
+  // `"task-N"` form here (`task_label`), the one place the component reads it.
+  // The allocation win lives in the runtime's per-message context, not here.
   WitContext {
     execution_id: ctx.execution_id.to_string(),
     node_id: ctx.node_id.to_string(),
-    task_id: ctx.task_id.to_string(),
+    task_id: ctx.task_label(),
   }
 }
 

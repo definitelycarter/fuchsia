@@ -7,9 +7,10 @@
 //! It faithfully reproduces the runtime's per-message construction *call*: the
 //! `execution_id` comes from the delivery's correlation (`CorrelationId::as_arc`
 //! — a refcount bump), `node_id` is an `Arc::clone` of the actor's stable
-//! spawn-time id (a refcount bump), and `task_id` is minted fresh (the one
-//! genuine per-message allocation). This is the `context/per_message` headline
-//! for the `Arc<str>` change.
+//! spawn-time id (a refcount bump), and `task_id` is a bare `u64` counter
+//! (no allocation — the `"task-N"` string is rendered lazily only at the guest
+//! boundary). With that, the per-message context build now allocates *nothing*;
+//! this is the `context/per_message` headline for the lazy-`task_id` change.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,11 +19,11 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use fuchsia_actor::ActorContext;
 use fuchsia_transport::CorrelationId;
 
-/// A fresh per-message task id, replicating `runtime::next_task_id` (one genuine
-/// allocation per message — the single id with no stable source to share).
-fn next_task_id() -> Arc<str> {
+/// A fresh per-message task id, replicating `runtime::next_task_id` (a bare
+/// `u64` increment — no allocation; the one id with no stable source to share).
+fn next_task_id() -> u64 {
   static NEXT: AtomicU64 = AtomicU64::new(1);
-  Arc::from(format!("task-{}", NEXT.fetch_add(1, Ordering::Relaxed)))
+  NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 fn bench_msg_context(c: &mut Criterion) {
@@ -36,7 +37,7 @@ fn bench_msg_context(c: &mut Criterion) {
     b.iter(|| {
       // Reproduce `run_actor`'s `msg_ctx` exactly: `execution_id` from the
       // delivery's correlation (refcount bump), `node_id` shared from the
-      // actor's stable id (refcount bump), `task_id` minted fresh (allocation).
+      // actor's stable id (refcount bump), `task_id` a bare `u64` (no alloc).
       let ctx = ActorContext::new(
         black_box(correlation.as_arc()),
         black_box(Arc::clone(&node_id)),

@@ -38,12 +38,14 @@ Crates are layered bottom-up; each depends only on the layer below.
     front of the channel.
   - `fuchsia-runtime` — The actor substrate: `Runtime` owns the
     recv→handle→ack loop (one tokio task per actor), runs the lifecycle, builds a
-    **per-delivery** `ActorContext` (ids are `Arc<str>`, so the per-message
-    `execution_id` = the delivery's correlation and `node_id` = the actor's
-    stable id are refcount bumps, not allocations; `execution_id` is also entered
-    as a task-local for the handle), and provides the `schedule` capability
-    (`TokioSchedule`). `ActorRegistry` is the live `ActorHandle` address book.
-    Criterion bench under `benches/`.
+    **per-delivery** `ActorContext` (the string ids are `Arc<str>`, so the
+    per-message `execution_id` = the delivery's correlation and `node_id` = the
+    actor's stable id are refcount bumps, not allocations; `task_id` is a bare
+    `u64` counter rendered to `"task-N"` lazily — `ActorContext::task_label` —
+    only at the Wasm/Lua boundary, so the per-message context build allocates
+    nothing; `execution_id` is also entered as a task-local for the handle), and
+    provides the `schedule` capability (`TokioSchedule`). `ActorRegistry` is the
+    live `ActorHandle` address book. Criterion bench under `benches/`.
   - `fuchsia-engine` — Routing per a graph's edges. `Engine` (shareable as
     `Arc`) does `add_node` / `add_edge` / `remove_graph` / `push(.., id)` over a
     live `RouterState`, and provides the `emit` capability (`RoutedEmit`, which

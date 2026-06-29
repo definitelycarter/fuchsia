@@ -55,7 +55,7 @@ mod tests {
     let mut actor = PassthroughCreator
       .create(&ActorConfig::default(), &caps)
       .unwrap();
-    let ctx = ActorContext::new("exec", "node", "task");
+    let ctx = ActorContext::new("exec", "node", 1);
     actor.handle(&ctx, Message::empty("reading")).await.unwrap();
 
     let out = sink.lock().unwrap();

@@ -24,7 +24,7 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 fn ctx() -> ActorContext {
-  ActorContext::new("exec", "node", "task")
+  ActorContext::new("exec", "node", 1)
 }
 
 fn bench_passthrough(c: &mut Criterion) {

@@ -57,7 +57,7 @@ fn config(script: &str) -> ActorConfig {
 }
 
 fn ctx() -> ActorContext {
-  ActorContext::new("exec", "node", "task")
+  ActorContext::new("exec", "node", 1)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -42,8 +42,13 @@ An **`ActorContext`** is per-call identity threaded through every invocation —
 actor): `node_id` is the static actor id, `execution_id` is the **run** the
 message belongs to (the delivery's [correlation id](../rfcs/message-correlation-id.md),
 minted at the trigger and propagated automatically), and `task_id` is a fresh
-per-message id. Capabilities are *not* on the context; they're injected once at
-construction (see [Capabilities](./host-capabilities.md)).
+per-message id. The two string ids are `Arc<str>` (shared from the correlation
+and the stable spawn-time id — refcount bumps, not allocations), while `task_id`
+is a bare `u64` counter: nothing in the runtime reads it for correctness, so the
+guest-visible `"task-N"` string is rendered lazily (`ActorContext::task_label`)
+only at the Wasm/Lua boundary. The per-message context build therefore
+allocates nothing. Capabilities are *not* on the context; they're injected once
+at construction (see [Capabilities](./host-capabilities.md)).
 
 Actors are built by an **`ActorCreator`**, registered into an `ActorFactory`
 under a type name:
@@ -114,8 +119,9 @@ The loop itself:
 while let Some(delivery) = rx.recv().await {
     let Delivery { msg, ack, span: parent, correlation } = delivery;
     let span = tracing::debug_span!(parent: &parent, "actor.handle", …);
-    // Per-delivery context: execution_id = this run, task_id = this handling.
-    let msg_ctx = ActorContext::new(correlation.to_string(), node_id.clone(), next_task_id());
+    // Per-delivery context: execution_id = this run, task_id = this handling
+    // (a bare u64 counter — no allocation; rendered to "task-N" only at a guest).
+    let msg_ctx = ActorContext::new(correlation.as_arc(), node_id.clone(), next_task_id());
     // Enter the correlation as a task-local for the handle (mirroring the span),
     // so the actor's emits capture it and propagate the run id onward.
     let outcome = correlation.scope(actor.handle(&msg_ctx, msg).instrument(span)).await;

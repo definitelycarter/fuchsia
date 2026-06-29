@@ -117,11 +117,12 @@ fn build_ctx(lua: &mlua::Lua, ctx: &ActorContext) -> Result<mlua::Table, ActorEr
       .set(k, v)
       .map_err(|e| ActorError::Handle(format!("lua ctx set {k}: {e}")))
   };
-  // The ids are `Arc<str>`; deref to `&str` for the Lua table (the guest sees
-  // plain strings).
+  // The string ids are `Arc<str>`; deref to `&str` for the Lua table (the guest
+  // sees plain strings). `task_id` is a `u64` counter on the host — rendered to
+  // its guest-visible `"task-N"` form here, the one place a script reads it.
   set("execution_id", ctx.execution_id.as_ref())?;
   set("node_id", ctx.node_id.as_ref())?;
-  set("task_id", ctx.task_id.as_ref())?;
+  set("task_id", &ctx.task_label())?;
   Ok(table)
 }
 
