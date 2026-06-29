@@ -23,6 +23,7 @@ lands (no strikethrough).
 |-----|----------|
 | Mailbox capacity is a hardcoded `mailbox(32)` in `spawn_with_caps`; not configurable per-node or per-graph | Medium |
 | A long-running `handle` runs to completion — there is no mid-call interruption (cancellation is between messages, via mailbox close) | Medium |
+| Uncounted at-most-once losses (surfaced by [engine stress testing](../rfcs/engine-stress-testing.md)): a transient restart (a caught panic that rebuilds under budget) bumps no `Health` counter, so a flapping node is unobservable and its dropped in-flight message is uncounted — a crash counter closes it (fix in progress); and a `push` shed at the entrypoint is uncounted (its doc overclaims). | Medium |
 
 ### `fuchsia-engine`
 
@@ -52,3 +53,4 @@ lands (no strikethrough).
 | Item | Priority |
 |------|----------|
 | The `fuchsia-actor-wasm` integration test and `fuchsia-examples` need `test-components/actor-echo` built first (they skip / print instructions otherwise); a CI step should build it so the wasm path is actually exercised | Medium |
+| Engine/runtime stress testing — a seeded scenario harness (throw randomized work + faults at a live engine on a multi-threaded runtime; assert conservation / no-zombies / liveness / budget invariants). The lifecycle machinery from [node failure handling](../rfcs/node-failure-handling.md) is covered only by sequential single-threaded tests today. See [RFC](../rfcs/engine-stress-testing.md). | High |

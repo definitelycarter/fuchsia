@@ -32,3 +32,4 @@
 - [Runs & Result Correlation](./rfcs/runs-and-results.md)
 - [JavaScript Actor (QuickJS)](./rfcs/javascript-actor.md)
 - [`from_fn` Actors & Default Lifecycle](./rfcs/from-fn-actors.md)
+- [Engine Stress Testing](./rfcs/engine-stress-testing.md)

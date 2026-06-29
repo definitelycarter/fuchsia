@@ -356,3 +356,12 @@ counter here covers the *internal-routing* retries the feeder can't see.
   deregisters, so a `restart_node` landing in that brief window sees the node as still-live and
   returns `AlreadyRunning` (retryable). Setting the flag earlier would race the router-restore
   against the deregister — worse — so the transient is accepted rather than fixed.
+- **Uncounted at-most-once losses** (surfaced by the
+  [stress harness](./engine-stress-testing.md)). Two losses leave no observable trace, cutting
+  against the "failure shows up as a rising count" promise: (1) a message whose `handle`
+  *panics* on a restart-enabled node is dropped by `catch_unwind` on a **transient** rebuild,
+  bumping no `Health` counter — so a flapping node looks healthy and its dropped delivery
+  vanishes uncounted (a `Health` crash counter closes it; **fix in progress**). (2) A `push`
+  shed at the entrypoint (full mailbox) bypasses the route counters, and `push`'s doc overclaims
+  that Health records the outcome — the clean fix is `push` **returning the offer outcome** so
+  the host's ingress can react.
