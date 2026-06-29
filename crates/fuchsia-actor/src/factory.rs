@@ -31,10 +31,11 @@ pub const COMPONENT_ENV_KEY: &str = "component";
 ///   (continue / fail / retry). The actor never sees it. Its [`Default`] is
 ///   today's behavior (count + drop), so an unset policy changes nothing.
 ///
-/// More host-understood policy fields are coming (the RFC adds a `restart`
-/// policy and a `poison_after` threshold in later slices). To keep adding them
-/// non-breaking, **construct with `..Default::default()`** — every site already
-/// does, so a new field defaults in for free. (Not `#[non_exhaustive]`: that
+/// More host-understood policy fields may follow ([`FailurePolicy`] already
+/// carries `on_error`, a `restart` policy, and a `poison_after` quarantine
+/// threshold). To keep adding them non-breaking, **construct with
+/// `..Default::default()`** — every site already does, so a new field defaults
+/// in for free. (Not `#[non_exhaustive]`: that
 /// would forbid the `..Default::default()` record-update form for any
 /// cross-crate constructor — including this workspace's own builtins/examples —
 /// forcing a mutate-after-`default()` dance everywhere; the spread convention

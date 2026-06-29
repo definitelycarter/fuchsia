@@ -232,3 +232,59 @@ async fn exhausted_retry_with_sink_reports_ok_to_a_durable_caller() {
   assert_eq!(calls.load(Ordering::SeqCst), 3);
   assert_eq!(handles.letters.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn poison_redelivery_is_quarantined_through_push_durable_attempt() {
+  // A poison message re-delivered via `push_durable_attempt` with an attempt
+  // count over the node's `poison_after` is quarantined to the dead-letter sink
+  // (reason Poison) *without* `handle` running, and `push_durable_attempt`
+  // resolves `Ok` so the feeder stops re-delivering. End-to-end through the
+  // engine: the field stamped by `with_attempts` is the one the runtime gate
+  // reads.
+  let calls = Arc::new(AtomicUsize::new(0));
+  let (dl, handles) = sink();
+
+  let engine = Engine::new();
+  engine
+    .register(
+      "failing",
+      ErrCreator {
+        calls: calls.clone(),
+      },
+    )
+    .await;
+
+  let mut caps = ActorCapabilities::new();
+  caps.insert::<dyn DeadLetter>(dl);
+  // `poison_after: 2` — a delivery with attempts > 2 is quarantined.
+  let config = ActorConfig {
+    failure: FailurePolicy::poison_after(2),
+    ..Default::default()
+  };
+  engine
+    .add_node(ActorId::new("failing"), "failing", &config, caps)
+    .await
+    .unwrap();
+
+  // The feeder re-delivers a previously-Lost message as attempt 3 (> 2).
+  engine
+    .push_durable_attempt(
+      &ActorId::new("failing"),
+      Message::empty("job"),
+      CorrelationId::from("run-poison"),
+      3,
+    )
+    .await
+    .expect("quarantine reports Ok so the feeder stops re-delivering");
+  handles.notify.notified().await;
+
+  // Quarantined to the sink (reason Poison { attempts: 3 }), keyed by run.
+  let letters = handles.letters.lock().unwrap();
+  assert_eq!(letters.len(), 1);
+  assert_eq!(letters[0].msg.type_, "job");
+  assert_eq!(letters[0].node, ActorId::new("failing"));
+  assert_eq!(letters[0].correlation.as_str(), "run-poison");
+  assert_eq!(letters[0].reason, DeadLetterReason::Poison { attempts: 3 });
+  // `handle` never ran — the always-erroring actor was never invoked.
+  assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

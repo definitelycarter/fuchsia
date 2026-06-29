@@ -21,11 +21,21 @@ pub type Outcome = Result<(), ActorError>;
 /// abnormal loop exit) rather than handling another message — a node *death*,
 /// not a failed delivery. Keeping it distinct means a crashed node reads as a
 /// death, not as one more errored message folded into `errored`.
+///
+/// `poisoned` is a third, distinct outcome: a delivery whose cross-delivery
+/// attempt count crossed the node's `poison_after` threshold and was
+/// **quarantined** — diverted without handling so it can't crash the node again
+/// (a poison message). Like `died`, it is kept off `errored`/`handled`: a
+/// quarantine is neither a normal handle nor a per-message error. It is bumped
+/// only on the *fallback* path where no dead-letter sink absorbed the poison
+/// (the sink path records it on the sink instead), so a rising `poisoned` count
+/// surfaces poison drops that nothing else captured.
 #[derive(Debug, Default)]
 pub struct Health {
   handled: AtomicU64,
   errored: AtomicU64,
   died: AtomicU64,
+  poisoned: AtomicU64,
 }
 
 impl Health {
@@ -46,6 +56,17 @@ impl Health {
     self.died.fetch_add(1, Ordering::Relaxed);
   }
 
+  /// Record that one delivery was **quarantined** as poison: its cross-delivery
+  /// attempt count crossed the node's `poison_after` threshold, so it was
+  /// diverted without being handled. Counted separately from `errored` (a
+  /// per-message handle failure) and `died` (a node-lifecycle event) so a poison
+  /// drop is observable as its own distinct event. The run loop calls this only
+  /// on the fallback path — a node with **no** dead-letter sink granted; with a
+  /// sink the poison is recorded on the sink (reason `Poison`) instead.
+  pub fn record_poison(&self) {
+    self.poisoned.fetch_add(1, Ordering::Relaxed);
+  }
+
   pub fn handled(&self) -> u64 {
     self.handled.load(Ordering::Relaxed)
   }
@@ -58,6 +79,14 @@ impl Health {
   /// exit). `0` for a healthy node; a normal stop/teardown does **not** bump it.
   pub fn died(&self) -> u64 {
     self.died.load(Ordering::Relaxed)
+  }
+
+  /// How many deliveries this node quarantined as poison and dropped on the
+  /// no-sink fallback (the threshold was crossed but no dead-letter sink was
+  /// granted to preserve them). `0` for a node that has quarantined nothing, or
+  /// one whose poison was absorbed by a dead-letter sink.
+  pub fn poisoned(&self) -> u64 {
+    self.poisoned.load(Ordering::Relaxed)
   }
 }
 
@@ -110,6 +139,21 @@ pub struct Delivery {
   /// (the task-local set by the runtime before each `handle`), so it propagates
   /// across the hop without an actor touching it.
   pub correlation: CorrelationId,
+  /// How many times *this same delivery* has been handed to a node — a
+  /// **cross-delivery** attempt count that the poison-quarantine gate reads. A
+  /// first/normal delivery is `1`; an at-least-once feeder that re-delivers a
+  /// `Lost` message stamps an incremented count via
+  /// [`with_attempts`](Delivery::with_attempts), so a message that keeps
+  /// crashing the node climbs past the node's `poison_after` and is quarantined
+  /// instead of looping. It is a bare `u32` carried beside `correlation`/`span`,
+  /// so the hot path stays allocation-free.
+  ///
+  /// Distinct from a `retry` policy's *in-handler* re-invocations (those happen
+  /// within one delivery): `attempts` counts how many *separate* deliveries the
+  /// feeder has made of the same message across deaths/re-feeds. The in-memory
+  /// `Delivery` resets to `1` on a process restart — persisting it is the
+  /// durable feeder's concern, not the transport's.
+  pub attempts: u32,
 }
 
 impl Delivery {
@@ -133,7 +177,22 @@ impl Delivery {
       ack,
       span: Span::current(),
       correlation,
+      // A fresh construction is a *first* attempt. A re-delivering feeder
+      // overrides this with `with_attempts`.
+      attempts: 1,
     }
+  }
+
+  /// Stamp this delivery's cross-delivery [`attempts`](Delivery::attempts)
+  /// count, returning `self` for chaining off a constructor. Used by an
+  /// at-least-once feeder (e.g. `Engine::push_durable`) to carry the feeder's
+  /// current attempt number onto the delivery, so the runtime's poison gate can
+  /// tell a fresh delivery (`1`) from a re-delivery (`> 1`) and quarantine a
+  /// message that keeps crashing the node. `0` is normalized to `1` — a delivery
+  /// always counts as at least one attempt.
+  pub fn with_attempts(mut self, attempts: u32) -> Self {
+    self.attempts = attempts.max(1);
+    self
   }
 }
 
@@ -163,6 +222,45 @@ mod tests {
     assert_eq!(h.died(), 1);
     // The death did not inflate the per-message counters.
     assert_eq!(h.handled(), 1);
+  }
+
+  #[test]
+  fn record_poison_is_separate_from_errored_and_died() {
+    let h = Health::default();
+    h.record(&err()); // a failed message
+    h.record_death(); // a node death
+    h.record_poison(); // a quarantined poison message
+    assert_eq!(h.errored(), 1);
+    assert_eq!(h.died(), 1);
+    assert_eq!(h.poisoned(), 1);
+    // The poison did not inflate the per-message handled counter.
+    assert_eq!(h.handled(), 1);
+  }
+
+  #[test]
+  fn delivery_defaults_to_first_attempt() {
+    let d = Delivery::new(
+      Message::empty("x"),
+      Ack::Health(Arc::new(Health::default())),
+    );
+    assert_eq!(d.attempts, 1);
+  }
+
+  #[test]
+  fn with_attempts_stamps_and_normalizes_zero_to_one() {
+    let d = Delivery::new(
+      Message::empty("x"),
+      Ack::Health(Arc::new(Health::default())),
+    )
+    .with_attempts(4);
+    assert_eq!(d.attempts, 4);
+    // A feeder that hands `0` still counts as one attempt.
+    let d = Delivery::new(
+      Message::empty("x"),
+      Ack::Health(Arc::new(Health::default())),
+    )
+    .with_attempts(0);
+    assert_eq!(d.attempts, 1);
   }
 
   #[test]

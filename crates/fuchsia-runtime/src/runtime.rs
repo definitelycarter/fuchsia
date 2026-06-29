@@ -285,6 +285,9 @@ impl Runtime {
           emit,
           dead_letter,
           actor_id.clone(),
+          // The node's shared health, so the poison gate's no-sink fallback can
+          // bump the distinct poisoned counter. A refcount bump.
+          health.clone(),
         ));
         tokio::spawn(supervise(
           actor_task,
@@ -482,6 +485,72 @@ pub(crate) struct FailureSinks<'a> {
   pub(crate) node: &'a ActorId,
 }
 
+/// The poison-quarantine gate (**mechanism A**), run at the top of *every*
+/// recv loop — the default [`run_actor`] and the restart supervisor's
+/// `run_incarnation` — *before* a delivery reaches `handle`.
+///
+/// When `poison_after > 0` **and** the delivery's cross-delivery `attempts`
+/// count *exceeds* it, the delivery is **diverted without being handled** (so a
+/// poison message can't crash the node again): it is preserved on the
+/// dead-letter sink (reason [`Poison`]) if one was granted, else counted on the
+/// node's `Health` poisoned counter and dropped — and **`Ok` is reported on its
+/// ack**, so an at-least-once feeder treats it as taken-responsibility-for and
+/// stops re-delivering. Returns `None` (the caller does *not* call `handle`).
+///
+/// Otherwise (quarantine disabled, or the count is within budget) it returns
+/// `Some(delivery)` for the caller to handle as normal — the common path, a bare
+/// `u32` compare with no allocation and no clone.
+///
+/// [`Poison`]: fuchsia_transport::DeadLetterReason::Poison
+pub(crate) fn poison_check(
+  delivery: Delivery,
+  poison_after: u32,
+  sinks: &FailureSinks<'_>,
+  health: &Health,
+) -> Option<Delivery> {
+  // Disabled (`0`) or within budget: hand the delivery straight back to be
+  // handled. The hot path is a single compare on a `u32` already in hand.
+  if poison_after == 0 || delivery.attempts <= poison_after {
+    return Some(delivery);
+  }
+
+  // Over the threshold → quarantine. Divert without handling: move the message
+  // to the sink (reason Poison) if one was granted, else count + drop on Health.
+  let Delivery {
+    msg,
+    ack,
+    correlation,
+    attempts,
+    ..
+  } = delivery;
+  if let Some(sink) = sinks.dead_letter {
+    sink.dead_letter(DeadLettered::new(
+      msg,
+      correlation,
+      // Cold quarantine path — an owned id for the sink, like every other
+      // dead-letter path. A real `String` clone, paid only on a poison divert.
+      sinks.node.clone(),
+      DeadLetterReason::Poison { attempts },
+    ));
+  } else {
+    // No sink: count the poison as a distinct outcome and drop the message. The
+    // `Health` here is the *node's* shared counter (not the per-delivery ack), so
+    // the drop is observable even for a `Complete`-acked delivery.
+    health.record_poison();
+  }
+  // Report `Ok` so the feeder stops re-delivering: the runtime has taken
+  // responsibility for the poison, so an `Ack::Complete` durable caller must not
+  // retry (and re-poison) it, and a `Health` ack is satisfied. The message was
+  // *not* handled — this is the quarantine outcome, not a handle result.
+  ack.report(Ok(()));
+  None
+}
+
+// The default (non-restart) recv loop's ingredients — the actor, its mailbox,
+// the failure policy + sinks, and the shared health for the poison gate's
+// no-sink fallback. One per-node task, built once at `commit`; the arg count is
+// the cost of keeping the lean path free of a per-message struct build.
+#[allow(clippy::too_many_arguments)]
 async fn run_actor(
   mut actor: Box<dyn Actor>,
   ctx: ActorContext,
@@ -490,6 +559,7 @@ async fn run_actor(
   emit: Arc<dyn Emit>,
   dead_letter: Option<Arc<dyn DeadLetter>>,
   node: ActorId,
+  health: Arc<Health>,
 ) {
   // Borrow the failure destinations once for the whole loop — the `Arc`s /
   // `Option` live for `run_actor`, so this is a single bundle of references the
@@ -501,11 +571,18 @@ async fn run_actor(
   };
 
   while let Some(delivery) = rx.recv().await {
+    // Mechanism A: quarantine a poison delivery (attempts over `poison_after`)
+    // before it reaches `handle`, so it can't crash the node again. `None` means
+    // it was diverted (sink/Health) + `Ok`-acked here; skip to the next message.
+    let Some(delivery) = poison_check(delivery, failure.poison_after, &sinks, &health) else {
+      continue;
+    };
     let Delivery {
       msg,
       ack,
       span: parent,
       correlation,
+      ..
     } = delivery;
 
     // Apply the node's failure policy around `handle`. Returns the final outcome
@@ -2522,5 +2599,254 @@ mod tests {
       elapsed >= Duration::from_millis(50),
       "expected restart backoff, took {elapsed:?}"
     );
+  }
+
+  // ---- poison-message quarantine (slice 6) ------------------------------------
+
+  /// Send a delivery with an explicit `attempts` count straight into a node's
+  /// mailbox (a `Health` ack), bypassing `deliver` (which always stamps `1`) so a
+  /// test can drive the cross-delivery counter the poison gate reads.
+  async fn deliver_attempt(rt: &Runtime, id: &str, type_: &str, attempts: u32) {
+    let (mailbox, health) = {
+      let registry = rt.registry.lock().unwrap();
+      let handle = registry.get(&actor_id(id)).unwrap();
+      (handle.mailbox().clone(), handle.health().clone())
+    };
+    let delivery =
+      Delivery::new(Message::empty(type_), Ack::Health(health)).with_attempts(attempts);
+    assert!(mailbox.send(delivery).await.is_ok());
+  }
+
+  #[tokio::test]
+  async fn poison_delivery_is_quarantined_to_the_sink_without_handling() {
+    // A delivery whose attempts exceed `poison_after` is diverted to the
+    // dead-letter sink (reason Poison) *without* `handle` being called, the node
+    // survives to handle the next (in-budget) message.
+    let mut rt = Runtime::new();
+    let sink = RecorderDeadLetter::new();
+    // `poison_after: 2`, otherwise default (continue, no restart). The actor would
+    // succeed on every call, so a handle of the poison message would NOT error —
+    // proving the divert is the *gate*, not the failure policy.
+    let policy = FailurePolicy::poison_after(2);
+    let (health, probe) =
+      spawn_failing_with_dead_letter(&mut rt, "a", 0, policy, sink.clone()).await;
+
+    // attempts=3 > poison_after=2 → quarantined before handle.
+    deliver_attempt(&rt, "a", "poison", 3).await;
+    sink.notify.notified().await;
+
+    // The sink got the poison message with reason Poison { attempts: 3 }.
+    {
+      let letters = sink.letters.lock().unwrap();
+      assert_eq!(letters.len(), 1);
+      assert_eq!(letters[0].msg.type_, "poison");
+      assert_eq!(letters[0].node, actor_id("a"));
+      assert_eq!(letters[0].reason, DeadLetterReason::Poison { attempts: 3 });
+    }
+    // `handle` was NOT called for the poison message.
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    // The quarantine reports `Ok` on the ack (so a feeder stops re-delivering),
+    // which folds into `handled` for a Health ack — matching every other
+    // survive-and-quarantine path (route-to-error, dead-lettered retry). It is
+    // *not* an error, and the sink absorbed the poison so `poisoned` stays 0.
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.errored(), 0);
+    assert_eq!(health.poisoned(), 0);
+
+    // The node survives: a normal (attempts=1) message is handled.
+    rt.deliver(&actor_id("a"), Message::empty("ok"))
+      .await
+      .unwrap();
+    while probe.calls.load(Ordering::SeqCst) < 1 {
+      probe.notify.notified().await;
+    }
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn poison_quarantine_acks_ok_through_a_durable_ack() {
+    // The quarantine reports `Ok` on the ack so an at-least-once feeder stops
+    // re-delivering. Drive a `Complete` (durable) ack and assert the outcome is
+    // Ok even though the message was never handled.
+    let mut rt = Runtime::new();
+    let sink = RecorderDeadLetter::new();
+    let (_health, probe) = spawn_failing_with_dead_letter(
+      &mut rt,
+      "a",
+      u32::MAX, // would always error *if* handled — but it must not be handled
+      FailurePolicy::poison_after(2),
+      sink.clone(),
+    )
+    .await;
+
+    let mailbox = {
+      let registry = rt.registry.lock().unwrap();
+      registry.get(&actor_id("a")).unwrap().mailbox().clone()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let delivery = Delivery::new(Message::empty("poison"), Ack::Complete(tx)).with_attempts(5);
+    assert!(mailbox.send(delivery).await.is_ok());
+
+    let outcome = rx.await.unwrap();
+    assert!(
+      outcome.is_ok(),
+      "quarantined poison reports Ok to the feeder"
+    );
+    // Never handled (so the always-error actor never even ran).
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(sink.letters.lock().unwrap().len(), 1);
+  }
+
+  #[tokio::test]
+  async fn poison_after_zero_is_disabled_high_attempts_handled_normally() {
+    // Regression guard: `poison_after: 0` (the default) disables quarantine, so a
+    // high-attempts delivery is handled normally — exactly slice-5 behavior.
+    let mut rt = Runtime::new();
+    let sink = RecorderDeadLetter::new();
+    // Default policy = poison_after 0; actor succeeds.
+    let (health, probe) =
+      spawn_failing_with_dead_letter(&mut rt, "a", 0, FailurePolicy::default(), sink.clone()).await;
+
+    // A wildly high attempts count must NOT be quarantined when disabled.
+    deliver_attempt(&rt, "a", "high", 999).await;
+    while probe.calls.load(Ordering::SeqCst) < 1 {
+      probe.notify.notified().await;
+    }
+
+    // Handled normally; nothing quarantined.
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.poisoned(), 0);
+    assert_eq!(sink.letters.lock().unwrap().len(), 0);
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn poison_quarantine_no_sink_counts_on_health_and_drops() {
+    // No dead-letter sink: a poison delivery falls back to the Health poisoned
+    // counter + drop, and the node survives.
+    let mut rt = Runtime::new();
+    // poison_after 2, no sink granted.
+    let (health, probe) = spawn_failing(&mut rt, "a", 0, FailurePolicy::poison_after(2)).await;
+
+    deliver_attempt(&rt, "a", "poison", 3).await;
+    // Wait for the poisoned counter to tick (the divert is synchronous on the
+    // recv loop, so a short spin suffices).
+    while health.poisoned() == 0 {
+      tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    // Counted as a distinct poisoned outcome, dropped, never handled. The Ok
+    // ack folds into `handled` (as on every quarantine path); the distinct
+    // `poisoned` counter is what marks it as a poison drop, and `errored`/`died`
+    // stay clear.
+    assert_eq!(health.poisoned(), 1);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.errored(), 0);
+    assert_eq!(health.died(), 0);
+
+    // The node survives for the next (in-budget) message.
+    rt.deliver(&actor_id("a"), Message::empty("ok"))
+      .await
+      .unwrap();
+    while probe.calls.load(Ordering::SeqCst) < 1 {
+      probe.notify.notified().await;
+    }
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn poison_message_redeliveries_spare_the_restart_budget_and_quarantine() {
+    // **Mechanism B + A together.** A restart-enabled node that *always* panics,
+    // fed the *same* message as re-deliveries (attempts 1,2,3,4) with a small
+    // restart budget and `poison_after: 3`:
+    //   - attempts=1 panics → charges 1 restart (first attempt → node-attributed).
+    //   - attempts=2,3 panic → rebuild WITHOUT charging (re-delivery →
+    //     message-attributed): the budget is spared.
+    //   - attempts=4 > poison_after=3 → quarantined (mechanism A): diverted to the
+    //     sink, Ok-acked, node spared.
+    // So the node survives `max_restarts=1` despite four panic-inducing
+    // deliveries, and never dies.
+    let mut rt = Runtime::new();
+    let (dead, _notify) = record_deaths(&mut rt);
+    let sink = RecorderDeadLetter::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    // max_restarts=1, poison_after=3 — quarantine fires before the (1) budget can
+    // be re-charged by repeated first attempts.
+    let mut policy = FailurePolicy::restart(1, backoff);
+    policy.poison_after = 3;
+    let (tx, health, probe) =
+      spawn_restartable(&mut rt, "a", u32::MAX, policy, Some(sink.clone())).await;
+
+    // Feed the same message four times, simulating a feeder incrementing attempts
+    // per re-delivery. We send straight into the mailbox with explicit attempts.
+    let mailbox = {
+      let registry = rt.registry.lock().unwrap();
+      registry.get(&actor_id("a")).unwrap().mailbox().clone()
+    };
+    for attempt in 1..=4u32 {
+      let (ack_tx, _ack_rx) = tokio::sync::oneshot::channel();
+      let delivery =
+        Delivery::new(Message::empty("poison"), Ack::Complete(ack_tx)).with_attempts(attempt);
+      assert!(mailbox.send(delivery).await.is_ok());
+    }
+
+    // Wait until the 4th delivery is quarantined to the sink.
+    sink.notify.notified().await;
+
+    // The poison was quarantined at attempts=4 (> poison_after=3), node spared.
+    {
+      let letters = sink.letters.lock().unwrap();
+      assert_eq!(letters.len(), 1);
+      assert_eq!(letters[0].reason, DeadLetterReason::Poison { attempts: 4 });
+    }
+    // The node never died: the re-delivery crashes (attempts 2,3) did NOT charge
+    // the (max_restarts=1) budget, and the first attempt's single restart left
+    // budget intact. So it's still registered and never recorded a death.
+    assert_eq!(health.died(), 0);
+    assert!(dead.lock().unwrap().is_empty());
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+    // It did rebuild (the panics): setups = initial + at least the first-attempt
+    // restart. We don't pin the exact count (re-delivery rebuilds also bump it),
+    // only that it stayed alive.
+    assert!(probe.setups.load(Ordering::SeqCst) >= 2);
+    drop(tx);
+  }
+
+  #[tokio::test]
+  async fn distinct_first_attempt_crashes_burn_the_budget_and_die() {
+    // The contrast to the poison case: a node that panics on *distinct*
+    // first-attempt (attempts=1) messages charges the budget on each crash and
+    // dies once it's exhausted — proving mechanism B spares only *re-deliveries*,
+    // not first attempts (a genuinely sick node still dies).
+    let mut rt = Runtime::new();
+    let (dead, notify) = record_deaths(&mut rt);
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    // max_restarts=2, poison_after=5 (high, so it never fires here — all attempts
+    // are 1). Three first-attempt crashes exhaust the (2) budget.
+    let mut policy = FailurePolicy::restart(2, backoff);
+    policy.poison_after = 5;
+    let (tx, health, probe) = spawn_restartable(&mut rt, "a", u32::MAX, policy, None).await;
+    drop(tx);
+
+    // Three distinct first-attempt (attempts=1, via `deliver`) crash messages.
+    for label in ["m1", "m2", "m3"] {
+      rt.deliver(&actor_id("a"), Message::empty(label))
+        .await
+        .unwrap();
+    }
+
+    // The death fires once the budget is exhausted by the three first-attempt
+    // crashes (initial + 2 restarts).
+    notify.notified().await;
+
+    assert_eq!(health.died(), 1);
+    assert_eq!(dead.lock().unwrap().as_slice(), &[actor_id("a")]);
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+    // 3 incarnations were set up: initial + 2 charged restarts.
+    assert_eq!(probe.setups.load(Ordering::SeqCst), 3);
   }
 }

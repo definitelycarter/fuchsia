@@ -25,8 +25,18 @@
 //!   are drained by the new incarnation. The in-flight message that panicked is
 //!   **dropped, not re-fed** (its ack drops: a `Complete` reads as lost and
 //!   retries on the feeder's side, a `Health` ack is simply uncounted), so a bad
-//!   *in-memory* message can't loop the budget away — cross-delivery poison
-//!   detection is a later slice.
+//!   *in-memory* message can't loop the budget away.
+//! - **Poison protection.** A panic charges the restart budget *only* when the
+//!   crashing delivery was a **first attempt** (`attempts <= 1`). A crash on a
+//!   feeder **re-delivery** (`attempts > 1`) rebuilds the node *without* spending
+//!   budget — it's attributed to the message, not the node — so a poison message
+//!   re-delivered by an at-least-once feeder can't kill an otherwise-healthy node
+//!   (**mechanism B**). Paired with the quarantine gate
+//!   ([`poison_check`](crate::runtime::poison_check), **mechanism A**) at the top
+//!   of the loop, which diverts that message once its `attempts` cross the node's
+//!   `poison_after`: the message crashes once (charging one restart), its
+//!   re-deliveries crash without charging, then it is quarantined — node spared,
+//!   message preserved.
 //! - When the budget is exhausted the node **dies permanently**: it records the
 //!   death (deregister + `Health::died` + the death listener, via
 //!   [`record_death`](crate::runtime::record_death)) and drains whatever is left
@@ -53,7 +63,7 @@ use futures_util::FutureExt;
 use tokio::sync::Notify;
 
 use crate::registry::{ActorHandle, ActorRegistry};
-use crate::runtime::{DeathListener, FailureSinks, handle_with_policy};
+use crate::runtime::{DeathListener, FailureSinks, handle_with_policy, poison_check};
 
 /// The rebuild recipe + run-loop state a [`supervise_with_restart`] task owns —
 /// everything needed to build *one more* incarnation of a node on its surviving
@@ -153,8 +163,16 @@ impl RestartControl {
 /// whether the supervisor restarts, parks dead, or shuts down cleanly.
 enum Incarnation {
   /// `handle` panicked (caught by `catch_unwind`). A crash → restart if budget
-  /// remains, else die permanently.
-  Panicked,
+  /// remains, else die permanently. Carries the crashing delivery's
+  /// cross-delivery `attempts` count so the supervisor can charge the restart
+  /// budget **only on a first attempt** (`attempts <= 1`) — **mechanism B**: a
+  /// re-delivery crash is attributed to the *message*, not the node, so a poison
+  /// message can't burn an otherwise-healthy node's budget.
+  Panicked {
+    /// The `attempts` count of the delivery that panicked (`1` for a first/normal
+    /// delivery, `> 1` for a feeder re-delivery).
+    attempts: u32,
+  },
   /// `rx` closed (every sender dropped) without an intentional stop, while the
   /// runtime is still up — senders vanished out from under a live node. Treated
   /// as a death, like the non-restart path's abnormal-exit classification.
@@ -252,7 +270,7 @@ pub(crate) async fn supervise_with_restart(
     let outcome = match actor {
       None => Incarnation::BuildFailed,
       Some(mut actor) => {
-        run_incarnation(&mut actor, &recipe, &mut rx, &stopping, &control).await
+        run_incarnation(&mut actor, &recipe, &mut rx, &stopping, &control, &health).await
         // `actor` is dropped here on every exit, running its `Drop`. On a
         // `Stopped`/`Shutdown`/`ForceRestart` we explicitly ran `teardown`
         // inside `run_incarnation`; on a crash we deliberately discard without
@@ -281,7 +299,40 @@ pub(crate) async fn supervise_with_restart(
 
       // A crash (panic / abandoned / build failure). Restart if budget remains,
       // else die permanently.
-      Incarnation::Panicked | Incarnation::Abandoned | Incarnation::BuildFailed => {
+      Incarnation::Panicked { .. } | Incarnation::Abandoned | Incarnation::BuildFailed => {
+        // **Mechanism B** — the budget-charging rule. A crash charges the restart
+        // budget only when it is attributed to the *node*, not a *message*:
+        // - A panic on a **first attempt** (`attempts <= 1`) may be a genuine
+        //   sick node, so it charges (and a node crashing on varied first-attempt
+        //   inputs burns its budget and dies).
+        // - A panic on a **re-delivery** (`attempts > 1`) is the *same* input
+        //   crashing again — attributed to the message — so it rebuilds the node
+        //   *without* charging, sparing an otherwise-healthy node. This sparing
+        //   applies **only when poison quarantine is enabled** (`poison_after >
+        //   0`): mechanism A then bounds the loop by diverting the message once
+        //   `attempts` cross the threshold. With quarantine **off**
+        //   (`poison_after == 0`) nothing would stop the re-deliveries, so a
+        //   re-delivery crash charges normally — the node dies after
+        //   `max_restarts` (slice-5 behavior) instead of rebuilding forever.
+        // - An `Abandoned` / `BuildFailed` crash has no triggering delivery, so
+        //   it is always node-attributed and charges.
+        let charge = match outcome {
+          Incarnation::Panicked { attempts } => attempts <= 1 || recipe.failure.poison_after == 0,
+          _ => true,
+        };
+
+        if !charge {
+          // A re-delivery panic: rebuild on the surviving `rx` without spending
+          // budget. Back off (indexed by restarts already made) so a fast
+          // re-delivery loop doesn't hot-spin, but leave `restarts` untouched.
+          let delay = policy.backoff.delay_for(restarts);
+          if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+          }
+          tracing::warn!(node = %recipe.node, "rebuilding node after a re-delivery crash (budget spared — message-attributed)");
+          continue;
+        }
+
         if restarts < policy.max_restarts {
           // Budget remains: wait the backoff (indexed by restarts already made),
           // count it, and loop to rebuild on the surviving `rx`.
@@ -365,6 +416,24 @@ pub(crate) async fn supervise_with_restart(
   }
 }
 
+/// Run `teardown`, **catching a panic** so it can't unwind the supervisor task.
+/// The restart supervisor *is* the per-node task — unlike the lean default path,
+/// there is no `JoinHandle` watcher behind it — so an unhandled `teardown` panic
+/// here would kill the node silently and leave its router entry behind as a
+/// zombie (exactly the failure death detection exists to prevent). The instance
+/// is being discarded either way, so a panicking or erroring `teardown` is logged
+/// and swallowed; the caller proceeds with its intended lifecycle outcome.
+async fn teardown_caught(actor: &mut Box<dyn Actor>, recipe: &RestartRecipe) {
+  match AssertUnwindSafe(actor.teardown(&recipe.ctx))
+    .catch_unwind()
+    .await
+  {
+    Ok(Ok(())) => {}
+    Ok(Err(err)) => tracing::error!(node = %recipe.node, error = %err, "actor teardown errored"),
+    Err(_panic) => tracing::error!(node = %recipe.node, "actor teardown panicked"),
+  }
+}
+
 /// One incarnation's recv→handle loop, returning *why* it ended. Mirrors
 /// [`run_actor`](crate::runtime)'s loop, but each `handle_with_policy` is wrapped
 /// in `catch_unwind` so a panic is caught here (the supervisor's task) instead of
@@ -375,12 +444,14 @@ async fn run_incarnation(
   rx: &mut MailboxRx,
   stopping: &AtomicBool,
   control: &RestartControl,
+  health: &Health,
 ) -> Incarnation {
   let sinks = FailureSinks {
     emit: recipe.emit.as_ref(),
     dead_letter: recipe.dead_letter.as_deref(),
     node: &recipe.node,
   };
+  let poison_after = recipe.failure.poison_after;
 
   loop {
     // Act on a pending force-restart up front. The `force` flag — not the
@@ -390,7 +461,7 @@ async fn run_incarnation(
     // Checking the flag every iteration means a force is never lost to the
     // `select!`'s race, and is honored within one message even under load.
     if control.inner.force.swap(false, Ordering::SeqCst) {
-      let _ = actor.teardown(&recipe.ctx).await;
+      teardown_caught(actor, recipe).await;
       return Incarnation::ForceRestart;
     }
 
@@ -399,7 +470,7 @@ async fn run_incarnation(
         let Some(delivery) = maybe else {
           // `rx` closed: an intentional stop set the flag (clean shutdown),
           // otherwise senders vanished out from under a live node (a death).
-          let _ = actor.teardown(&recipe.ctx).await;
+          teardown_caught(actor, recipe).await;
           return if stopping.load(Ordering::SeqCst) {
             Incarnation::Shutdown
           } else {
@@ -407,15 +478,19 @@ async fn run_incarnation(
           };
         };
 
-        let Delivery { msg, ack, span: parent, correlation } = delivery;
+        // **Mechanism A**: quarantine a poison delivery before it reaches
+        // `handle`, so a re-delivered message that keeps panicking this node is
+        // diverted (sink/Health) + `Ok`-acked instead of crashing it yet again.
+        // `None` means it was quarantined here; loop to the next message.
+        let Some(delivery) = poison_check(delivery, poison_after, &sinks, health) else {
+          continue;
+        };
 
-        // The whole policy-applied handle is wrapped in catch_unwind: a panic
-        // inside `handle` is caught *here* without unwinding `rx`. On a caught
-        // panic the in-flight delivery's `ack` is dropped (not reported):
-        // a `Complete` reads as lost → the feeder retries; a `Health` ack is
-        // simply uncounted. We deliberately do **not** re-feed the panicking
-        // message — that would risk looping the restart budget on one bad
-        // in-memory message (cross-delivery poison is a later slice).
+        // Capture the crashing delivery's `attempts` *before* `msg` is moved into
+        // `handle` — on an unwind it's gone, so it's read here for mechanism B's
+        // budget-charging decision.
+        let Delivery { msg, ack, span: parent, correlation, attempts } = delivery;
+
         let result = AssertUnwindSafe(handle_with_policy(
           actor,
           &recipe.ctx,
@@ -434,16 +509,19 @@ async fn run_incarnation(
             if stop {
               // `OnError::Fail`: a deliberate stop. Run teardown and report it as
               // a non-restartable stop.
-              let _ = actor.teardown(&recipe.ctx).await;
+              teardown_caught(actor, recipe).await;
               return Incarnation::Stopped;
             }
           }
           Err(_panic) => {
             // `ack` was moved into `handle_with_policy` and dropped on the
             // unwind, so it is already unreported (lost). Discard the actor and
-            // restart — no teardown on the poisoned instance.
-            tracing::error!(node = %recipe.node, "handle panicked; restarting node");
-            return Incarnation::Panicked;
+            // restart — no teardown on the poisoned instance. Carry the crashing
+            // delivery's `attempts` so the supervisor charges the budget only on
+            // a first attempt (mechanism B): a re-delivery crash is the message's
+            // fault, not the node's, so it spares the budget.
+            tracing::error!(node = %recipe.node, attempts, "handle panicked; restarting node");
+            return Incarnation::Panicked { attempts };
           }
         }
       }
@@ -453,7 +531,7 @@ async fn run_incarnation(
       // never reaches here — the supervisor only awaits `revive` while parked.)
       _ = control.inner.revive.notified() => {
         if control.inner.force.swap(false, Ordering::SeqCst) {
-          let _ = actor.teardown(&recipe.ctx).await;
+          teardown_caught(actor, recipe).await;
           return Incarnation::ForceRestart;
         }
         // A non-force notify hit a live node (e.g. a redundant revive); ignore

@@ -83,9 +83,8 @@ impl DeadLettered {
 
 /// Why a message was dead-lettered.
 ///
-/// `#[non_exhaustive]` so a future `Poison { attempts }` reason (the
-/// per-delivery attempt threshold, a later slice) slots in without breaking a
-/// product's exhaustive `match`.
+/// `#[non_exhaustive]` so a further reason slots in without breaking a product's
+/// exhaustive `match`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeadLetterReason {
@@ -115,6 +114,24 @@ pub enum DeadLetterReason {
     /// it died permanently (`0` for a node that crashed with no budget to spend,
     /// e.g. a default `max_restarts: 0` node would never reach this drain).
     restarts: u32,
+  },
+  /// A **poison message** — its cross-delivery [`attempts`] count crossed the
+  /// node's `poison_after` threshold, so the runtime quarantined it *without*
+  /// handling it (it would just crash the node again) and diverted it here. The
+  /// node is **spared** and keeps serving other traffic; the fault is attributed
+  /// to the message, not the node. Distinct from [`RetryExhausted`] (an
+  /// *in-handler* error budget within one delivery) and [`NodeDied`] (a node
+  /// that crashed across *different* deliveries): a poison message is the same
+  /// input re-delivered enough times to be classified bad.
+  ///
+  /// [`attempts`]: crate::Delivery::attempts
+  /// [`RetryExhausted`]: DeadLetterReason::RetryExhausted
+  /// [`NodeDied`]: DeadLetterReason::NodeDied
+  Poison {
+    /// The delivery's cross-delivery attempt count at quarantine — the value
+    /// that crossed `poison_after`. Greater than the threshold, so a triager can
+    /// see how many re-deliveries it took to classify the message poison.
+    attempts: u32,
   },
 }
 
@@ -164,5 +181,21 @@ mod tests {
     let got = rec.0.lock().expect("lock");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].reason, DeadLetterReason::NodeDied { restarts: 3 });
+  }
+
+  #[test]
+  fn poison_reason_carries_attempt_count() {
+    // A quarantined poison message: preserved on the sink with its crossing
+    // attempt count, the node spared.
+    let rec = Recorder(Mutex::new(Vec::new()));
+    rec.dead_letter(DeadLettered::new(
+      Message::empty("poison"),
+      CorrelationId::from("run-3"),
+      ActorId::new("n"),
+      DeadLetterReason::Poison { attempts: 4 },
+    ));
+    let got = rec.0.lock().expect("lock");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].reason, DeadLetterReason::Poison { attempts: 4 });
   }
 }

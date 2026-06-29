@@ -396,12 +396,45 @@ impl Engine {
   /// `id` is the run's [`CorrelationId`], exactly as on [`push`](Self::push) —
   /// minted at the trigger and propagated automatically downstream.
   ///
+  /// This is the **first-attempt** form (the delivery is stamped `attempts: 1`).
+  /// A durable feeder that re-delivers a [`Lost`](EngineError::Lost) message
+  /// must instead call [`push_durable_attempt`](Self::push_durable_attempt) with
+  /// its incremented attempt number, so the runtime's poison-quarantine gate can
+  /// tell a fresh delivery from a re-delivery.
+  ///
   /// [`MailboxTx::send`]: fuchsia_transport::MailboxTx::send
   pub async fn push_durable(
     &self,
     entrypoint: &ActorId,
     msg: Message,
     id: CorrelationId,
+  ) -> Result<(), EngineError> {
+    self.push_durable_attempt(entrypoint, msg, id, 1).await
+  }
+
+  /// [`push_durable`](Self::push_durable) carrying an explicit cross-delivery
+  /// **attempt number** — the re-delivery form for an at-least-once feeder.
+  ///
+  /// Where `push_durable` always stamps a first attempt, this stamps `attempt`
+  /// onto the [`Delivery`] (via [`Delivery::with_attempts`]), so a feeder
+  /// re-delivering a previously [`Lost`](EngineError::Lost) message increments
+  /// it per re-delivery (`1`, `2`, `3`, …). The runtime reads that count at its
+  /// poison gate: once it exceeds the entrypoint's `poison_after`, the message
+  /// is quarantined (dead-lettered / dropped) and resolves `Ok` here, so the
+  /// feeder stops re-delivering a message that keeps crashing the node rather
+  /// than looping it forever.
+  ///
+  /// **Persisting the count is the feeder's concern.** `attempts` lives on the
+  /// in-memory [`Delivery`] and resets if the process restarts; a feeder that
+  /// wants the count to survive a crash persists it alongside the job and passes
+  /// it back in here. `0` is normalized to `1` (a delivery is always at least
+  /// one attempt). Outcomes are identical to `push_durable`.
+  pub async fn push_durable_attempt(
+    &self,
+    entrypoint: &ActorId,
+    msg: Message,
+    id: CorrelationId,
+    attempt: u32,
   ) -> Result<(), EngineError> {
     // Resolve the target and clone its mailbox sender, then drop the read guard
     // *before* any `.await`. Holding a `std` RwLock guard across an await would
@@ -422,7 +455,7 @@ impl Engine {
     // `rx` observes a closed channel — the documented retry-on-loss signal.
     let (tx, rx) = oneshot::channel::<Outcome>();
     mailbox
-      .send(Delivery::with_correlation(msg, Ack::Complete(tx), id))
+      .send(Delivery::with_correlation(msg, Ack::Complete(tx), id).with_attempts(attempt))
       .await
       .map_err(|_| EngineError::Undelivered)?;
 

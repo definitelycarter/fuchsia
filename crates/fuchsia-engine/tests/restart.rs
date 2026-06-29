@@ -894,3 +894,153 @@ async fn restart_re_runs_setup_on_a_stable_id_with_the_same_caps_and_no_crash_te
     "a crash restart must not run teardown on the poisoned incarnation"
   );
 }
+
+#[tokio::test]
+async fn re_delivery_crash_with_poison_disabled_still_dies_not_loops() {
+  // Mechanism B (sparing a re-delivery crash from the restart budget) must apply
+  // ONLY when poison quarantine is enabled. With `poison_after == 0` (the
+  // default) there is no mechanism-A gate to ever divert a re-delivered poison
+  // message, so a re-delivery crash must still charge the budget — the node dies
+  // after `max_restarts` rather than rebuilding forever. (Regression guard: the
+  // un-gated rule would free-rebuild a re-delivered crash indefinitely.)
+  let engine = Engine::new();
+  let probe = Probe::new(u32::MAX); // always panics
+  engine
+    .register(
+      "probe",
+      ProbeCreator {
+        probe: probe.clone(),
+      },
+    )
+    .await;
+  // Restart enabled (max 2), poison quarantine left disabled (default).
+  engine
+    .add_node(
+      ActorId::new("p"),
+      "probe",
+      &restart_config(2),
+      ActorCapabilities::new(),
+    )
+    .await
+    .unwrap();
+
+  // Feed re-deliveries (attempts > 1) of a message that always crashes. Each
+  // crash charges the budget (poison disabled), so within `max_restarts + 1`
+  // crashes the node is permanently dead. Extra pushes after death resolve to
+  // NotFound — harmless.
+  for _ in 0..5 {
+    let _ = engine
+      .push_durable_attempt(
+        &ActorId::new("p"),
+        Message::empty("poison"),
+        CorrelationId::new(),
+        2, // a re-delivery
+      )
+      .await;
+  }
+
+  assert!(
+    wait_until(|| engine
+      .push(
+        &ActorId::new("p"),
+        Message::empty("x"),
+        CorrelationId::new()
+      )
+      .is_err())
+    .await,
+    "a re-delivery crash with poison disabled must still exhaust the budget and die"
+  );
+}
+
+/// A node whose `teardown` panics but whose `handle` is fine.
+struct TeardownPanicActor {
+  probe: Arc<Probe>,
+}
+
+#[async_trait]
+impl Actor for TeardownPanicActor {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    self.probe.setups.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  }
+  async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+    self.probe.handled.lock().unwrap().push(msg.type_.clone());
+    self.probe.notify.notify_one();
+    Ok(())
+  }
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    panic!("intentional panic in teardown");
+  }
+}
+
+struct TeardownPanicCreator {
+  probe: Arc<Probe>,
+}
+
+impl ActorCreator for TeardownPanicCreator {
+  fn create(
+    &self,
+    _config: &ActorConfig,
+    _caps: &ActorCapabilities,
+  ) -> Result<Box<dyn Actor>, ActorError> {
+    Ok(Box::new(TeardownPanicActor {
+      probe: self.probe.clone(),
+    }))
+  }
+}
+
+#[tokio::test]
+async fn teardown_panic_on_a_restart_node_does_not_zombify_it() {
+  // A panicking `teardown` must not unwind the restart supervisor (which has no
+  // JoinHandle watcher behind it) and silently zombify the node. A force-restart
+  // runs `teardown`; with the panic caught, the node still rebuilds and serves.
+  let engine = Engine::new();
+  let probe = Probe::new(0); // `handle` never panics — only `teardown` does
+  engine
+    .register(
+      "td-panic",
+      TeardownPanicCreator {
+        probe: probe.clone(),
+      },
+    )
+    .await;
+  engine
+    .add_node(
+      ActorId::new("p"),
+      "td-panic",
+      &restart_config(3),
+      ActorCapabilities::new(),
+    )
+    .await
+    .unwrap();
+
+  // Handle a first message (setup #1).
+  engine
+    .push(
+      &ActorId::new("p"),
+      Message::empty("before"),
+      CorrelationId::new(),
+    )
+    .unwrap();
+  assert!(wait_until(|| probe.handled.lock().unwrap().contains(&"before".to_owned())).await);
+
+  // Force-restart → `teardown` panics (must be caught) → the node rebuilds.
+  engine.restart_node(&ActorId::new("p"), true).await.unwrap();
+  assert!(
+    wait_until(|| probe.setups.load(Ordering::SeqCst) == 2).await,
+    "the node must rebuild despite a panicking teardown — not be silently zombified"
+  );
+
+  // And it still resolves + handles after the rebuild.
+  engine
+    .push(
+      &ActorId::new("p"),
+      Message::empty("after"),
+      CorrelationId::new(),
+    )
+    .unwrap();
+  assert!(
+    wait_until(|| probe.handled.lock().unwrap().contains(&"after".to_owned())).await,
+    "the rebuilt node must keep serving after a caught teardown panic"
+  );
+}

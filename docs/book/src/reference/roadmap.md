@@ -7,7 +7,6 @@ lands (no strikethrough).
 
 | Feature | Description | Notes |
 |---------|-------------|-------|
-| Node failure handling | **Remaining: poison-message quarantine.** Death detection, per-node error policy (continue/fail/retry), error output port, the dead-letter sink, and restart-with-backoff (+ `Engine::restart_node`) have shipped (parts 1–5). See [RFC](../rfcs/node-failure-handling.md). | `fuchsia-runtime`, `fuchsia-engine`, `fuchsia-actor` |
 | Graceful shutdown | `engine.shutdown(deadline)` — seal entrypoints, drain source → sink, run each `teardown`, deadline-bounded; requires a DAG. See [RFC](../rfcs/graceful-shutdown.md). | `fuchsia-engine`, `fuchsia-runtime` |
 | Runs & result correlation | Persistent graph; runs are correlation-tagged fire-and-forget messages; optional async result via a respond node + result sink. See [RFC](../rfcs/runs-and-results.md). | `fuchsia-engine`, host |
 | JavaScript actor (QuickJS) | Dynamic JS scripts in an embedded QuickJS interpreter (`rquickjs`, no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm is the hardened alternative. See [RFC](../rfcs/javascript-actor.md). | `fuchsia-actor-js` (new), `fuchsia-actor` |

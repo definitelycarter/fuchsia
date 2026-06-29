@@ -1,31 +1,32 @@
 # RFC: Node Failure Handling
 
-> **Status: in progress — parts 1–5 shipped; poison quarantine pending.** The
-> three open questions are resolved (see [Decisions](#decisions)). Part 1: the runtime
-> keeps the actor task's `JoinHandle`, a per-node supervisor deregisters a dead node so
-> it stops resolving, records a distinct `Health::died` count, and surfaces a death
-> callback the engine reacts to. Part 2: a typed, host-understood `FailurePolicy` on
-> `ActorConfig` (continue / fail / retry-with-backoff), applied by the run loop around
-> `handle`. Part 3: an `OnError::RouteToError` arm emits an error envelope (error string
-> + node id + original type/payload) on the node's reserved `"error"` port, stamped with
-> the triggering delivery's correlation. Part 4: a host-provided `DeadLetter` capability
+> **Status: implemented.** All six parts shipped. Part 1: the runtime keeps the actor
+> task's `JoinHandle`, a per-node supervisor deregisters a dead node so it stops
+> resolving, records a distinct `Health::died` count, and surfaces a death callback the
+> engine reacts to. Part 2: a typed, host-understood `FailurePolicy` on `ActorConfig`
+> (continue / fail / retry-with-backoff), applied by the run loop around `handle`.
+> Part 3: an `OnError::RouteToError` arm emits an error envelope (error string + node id
+> + original type/payload) on the node's reserved `"error"` port, stamped with the
+> triggering delivery's correlation. Part 4: a host-provided `DeadLetter` capability
 > (fuchsia owns the seam, the product owns storage) receives a message that exhausts
-> `retry` or hits `fail`, keyed by correlation; absent a sink, the prior count-and-drop
-> is unchanged. The ack reports `Ok` when a message is quarantined on a *surviving* node
-> (route-to-error / dead-lettered retry) and the real `Err` when the node *dies*
-> (`fail`) or nothing took responsibility. Part 5 (restart): a `RestartPolicy {
-> max_restarts, backoff }` on `FailurePolicy` (default `max_restarts: 0` = never
-> restart, the lean slice-1 path unchanged). A restart-enabled node runs on a
-> supervisor that **owns its mailbox** and a rebuild recipe and catches `handle` panics
-> with `catch_unwind` — discarding and rebuilding the actor on the *same* mailbox, so
-> the queue survives and routing is uninterrupted. A `fail` stop is never restarted; a
-> budget-exhausted node dies (deregister + `Health::died`) and drains its backlog to the
-> dead-letter sink (reason `NodeDied`). `Engine::restart_node(id, force)` revives a
-> permanently-dead node (the engine retains its router-restore bits + control handle, so
-> the parked supervisor's recipe is reused) or force-rebuilds a live one, resetting the
-> budget. **Poison-message quarantine (the per-delivery attempt counter + `poison_after`)
-> is the remaining slice.** Tracked in the
-> [roadmap](../reference/roadmap.md#features) Features table.
+> `retry` or hits `fail`, keyed by correlation; absent a sink, count-and-drop is
+> unchanged. The ack reports `Ok` when a message is quarantined on a *surviving* node
+> and the real `Err` when the node *dies* or nothing took responsibility. Part 5: a
+> `RestartPolicy { max_restarts, backoff }` (default `max_restarts: 0` = never restart,
+> the lean path unchanged); a restart-enabled node runs on a supervisor that owns its
+> mailbox + rebuild recipe and catches `handle` panics with `catch_unwind`, rebuilding
+> on the *same* mailbox so the queue survives, and `Engine::restart_node(id, force)`
+> revives a dead node or force-rebuilds a live one. Part 6: poison-message quarantine —
+> a per-delivery `attempts` count + a `poison_after` threshold diverts a message that
+> keeps crashing the node (to the dead-letter sink, reason `Poison`, else an observable
+> `Health` drop) without burning the node's restart budget, so one bad input can neither
+> kill an otherwise-healthy node nor loop forever.
+>
+> Remaining items are tracked follow-ups, not core (see [Still open](#still-open) and
+> the [`fuchsia-engine` roadmap Gaps](../reference/roadmap.md#gaps)): the
+> error-port-first precedence for dead-letter/poison (needs `Emit::emit_to` to return a
+> routing outcome), reviving a `fail`-stopped node, and attempt-counter durability. This
+> RFC stands as the durable design record.
 
 ## Concept
 

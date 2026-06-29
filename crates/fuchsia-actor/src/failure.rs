@@ -12,13 +12,11 @@ use serde::Deserialize;
 /// message is folded into `Health` and dropped, the node keeps going
 /// ([`OnError::Continue`]). An unset policy therefore changes nothing.
 ///
-/// This type is deliberately a small open struct so the *later* failure-handling
-/// slices slot in without churning the public surface:
+/// This type is deliberately a small open struct so the failure-handling slices
+/// slot in without churning the public surface:
 ///
-/// - `#[non_exhaustive]` lets fields be added (a `restart: RestartPolicy` and a
-///   `poison_after: u32` are coming — see the node-failure-handling RFC) without
-///   breaking the struct's construction (callers build it with
-///   `..Default::default()`).
+/// - `#[non_exhaustive]` lets fields be added without breaking the struct's
+///   construction (callers build it with `..Default::default()`).
 /// - [`OnError`] is itself `#[non_exhaustive]`, so a future arm (e.g. the
 ///   dead-letter terminal action) is a non-breaking addition.
 ///
@@ -37,6 +35,28 @@ pub struct FailurePolicy {
   /// unset policy keeps slice 1's behavior exactly: a death deregisters the node
   /// and stays dead, with no new per-message cost. See [`RestartPolicy`].
   pub restart: RestartPolicy,
+  /// The **poison-quarantine threshold**: when a delivery's cross-delivery
+  /// [`attempts`] count *exceeds* this, the runtime diverts it **without
+  /// handling it** (so it can't crash the node again) and reports `Ok` on the
+  /// ack (so an at-least-once feeder stops re-delivering). It goes to the
+  /// dead-letter sink (reason
+  /// [`Poison`](../../fuchsia_transport/enum.DeadLetterReason.html#variant.Poison))
+  /// if one is granted, else it is counted on `Health`'s poisoned counter and
+  /// dropped.
+  ///
+  /// `0` (the [`Default`]) **disables** quarantine — an unset policy is exactly
+  /// slice-5 behavior, and a re-delivered message is handled normally however
+  /// high its `attempts` climb. A node that opts in (`poison_after > 0`) bounds
+  /// a **poison message**: an input that deterministically crashes the node
+  /// every time, which an at-least-once feeder would otherwise re-deliver
+  /// forever. The first-attempt crash is attributed to the node (it may be a
+  /// genuine sick node); the re-delivery crashes are attributed to the message
+  /// and don't burn the node's restart budget; once `attempts` crosses
+  /// `poison_after` the message is quarantined and the node is spared.
+  ///
+  /// [`attempts`]: ../../fuchsia_transport/struct.Delivery.html#structfield.attempts
+  #[serde(default)]
+  pub poison_after: u32,
 }
 
 impl FailurePolicy {
@@ -79,6 +99,21 @@ impl FailurePolicy {
         max_restarts,
         backoff,
       },
+      ..Default::default()
+    }
+  }
+
+  /// A policy that **quarantines a poison message**: a delivery whose
+  /// cross-delivery `attempts` count exceeds `poison_after` is diverted without
+  /// handling (so it can't crash the node again), leaving the other arms at
+  /// their defaults. A small constructor so callers don't depend on the
+  /// (non-exhaustive) struct shape; for a node that also wants a restart budget
+  /// (the typical pairing — restart catches the first crash, poison quarantine
+  /// stops the re-delivery loop), build the struct with `..Default::default()`.
+  /// `poison_after: 0` leaves quarantine disabled (slice-5 behavior).
+  pub fn poison_after(poison_after: u32) -> Self {
+    Self {
+      poison_after,
       ..Default::default()
     }
   }
@@ -332,6 +367,34 @@ mod tests {
         .expect("parse");
     assert_eq!(p.restart.max_restarts, 5);
     assert_eq!(p.restart.backoff, Backoff::default());
+  }
+
+  #[test]
+  fn default_poison_after_is_disabled() {
+    // The default is quarantine-off (`0`) — an unset policy keeps slice-5
+    // behavior, so a re-delivered message is handled however high its attempts.
+    assert_eq!(FailurePolicy::default().poison_after, 0);
+  }
+
+  #[test]
+  fn poison_after_constructor_sets_threshold() {
+    let p = FailurePolicy::poison_after(3);
+    assert_eq!(p.poison_after, 3);
+    // The other arms are untouched — poison quarantine is orthogonal.
+    assert_eq!(p.on_error, OnError::Continue);
+    assert_eq!(p.restart.max_restarts, 0);
+  }
+
+  #[test]
+  fn deserializes_poison_after_from_json() {
+    // A product's JSON can give the threshold; absent it defaults to disabled.
+    let p: FailurePolicy =
+      serde_json::from_value(serde_json::json!({ "poison_after": 5 })).expect("parse");
+    assert_eq!(p.poison_after, 5);
+    let p: FailurePolicy =
+      serde_json::from_value(serde_json::json!({ "on_error": { "policy": "fail" } }))
+        .expect("parse");
+    assert_eq!(p.poison_after, 0);
   }
 
   #[test]
