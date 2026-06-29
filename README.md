@@ -10,15 +10,18 @@ own logic.
 
 Actors don't run their own loop. The runtime owns the receive loop: it pulls one
 message from an actor's mailbox, calls `handle`, and routes whatever the actor
-`emit`s to the downstream actors the graph wires it to. The contract (lifecycle
-+ emit) is synchronous, so even Wasm and Lua guests are driven with plain
-synchronous calls — no async bridge.
+`emit`s to the downstream actors the graph wires it to. The Rust `Actor`
+lifecycle is **async** — a `handle` can `.await` I/O without blocking the
+runtime — while the guest WIT contract stays synchronous: Wasm and Lua guests
+write straight-line code that the host drives with async wasmtime/mlua, so a
+guest call can suspend while an async host import runs.
 
 ## Highlights
 
 - **Single Actor trait.** Native Rust, Wasm components, and Lua scripts all
-  implement `fuchsia_actor::Actor` (`setup` / `handle` / `teardown`, sync, over
-  `&mut self`). Graphs mix and match freely.
+  implement `fuchsia_actor::Actor` — an async `handle` over `&mut self` is the
+  only required method (`setup` / `teardown` default to no-op); a native node can
+  even be a bare closure via `from_fn` / `register_fn`. Graphs mix and match freely.
 - **Handle-per-message.** The runtime drives the loop and reports each outcome to
   the message's ack; per-actor state is just struct fields, no locking.
 - **Declarative routing.** Actors emit on a **named output port** (`"out"` by

@@ -43,9 +43,10 @@ the only crate every other one depends on.
 ## The mental model
 
 An **actor** implements [`fuchsia_actor::Actor`](https://docs.rs/fuchsia-actor):
-three async methods over `&mut self` — `setup(ctx)` once, `handle(ctx,
-msg)` per message, `teardown(ctx)` on shutdown. The actor receives a `Message`,
-does work, and `emit`s; it does *not* know who receives its output.
+an async `handle(ctx, msg)` over `&mut self`, called once per message — the only
+required method, with optional `setup(ctx)` (once) and `teardown(ctx)` (on
+shutdown) that default to no-op. The actor receives a `Message`, does work, and
+`emit`s; it does *not* know who receives its output.
 
 The runtime owns the loop. There is no `run(inbox, …)` an actor drives itself;
 the runtime pulls one message from the actor's **mailbox**, calls `handle`, and
@@ -89,7 +90,9 @@ You give up dynamic routing from inside an actor and gain a clean split between
 
 The same `Actor` trait covers:
 
-1. **Native Rust actors** — implement the trait directly. Best for
+1. **Native Rust actors** — implement the trait directly (a struct), or write the
+   node as a bare closure with `from_fn` / `from_fn_with_state` and register it
+   via `ActorFactory::register_fn` — no struct or creator. Best for
    performance-critical or trusted code and protocol adapters. The conditioning
    operators in [`fuchsia-actor-builtins`](../runtimes/builtins.md) are native.
 2. **Wasm component actors** — `WasmActor<H: WasmHost>` from

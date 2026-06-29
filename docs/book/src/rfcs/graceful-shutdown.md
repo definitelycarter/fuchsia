@@ -51,12 +51,13 @@ mailbox is empty and it is not currently in `handle`; the engine knows this via 
 than racy length-polling, and it accounts for the runtime's own pending `schedule`
 timers.
 
-Because the actor contract is **synchronous** — `handle` runs to completion and
-returns — there is no post-`handle` async work *on the actor side* to wait for. A
-host *capability* that does fire-and-forget async work lives outside this model and
-is **not** awaited by shutdown; a product that adds such a capability owns draining
-it. (This is the existing synchronous limitation of the Wasm/Lua contract, made
-explicit.)
+Because the runtime **awaits each `handle` to completion** — an `async` `handle`
+is driven to return before the next message, with no detached continuation *on the
+actor side* — there is no post-`handle` async work to wait for. A host *capability*
+that does fire-and-forget async work lives outside this model and is **not** awaited
+by shutdown; a product that adds such a capability owns draining it. (Mid-`handle`
+interruption is a separate, unaddressed concern: `handle` always runs to
+completion — there is no mid-call cancellation.)
 
 **3. Tear down source → sink, in dependency order.** The graph is a DAG, so walk it
 from the entrypoints toward the sinks. Tear a node down once **(a)** all its
@@ -130,7 +131,7 @@ the runtime and reference them:
 ## Open questions
 
 - **Capability async work (deferred).** A host capability that does fire-and-forget
-  async work runs outside the synchronous handle, so shutdown's quiescence can't see
+  async work runs outside `handle`, so shutdown's quiescence can't see
   it. A hook letting such a capability drain its own work is deferred until a product
   needs it.
 - **Deadline default.** A sane engine default (tens of seconds to a few minutes), and

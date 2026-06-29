@@ -31,9 +31,10 @@ installs the subscriber).
 
 Actors do **not** run their own receive loop. The runtime owns the loop: it
 pulls one message from an actor's mailbox, calls `handle(&ctx, msg)`, records
-the outcome, and pulls the next. An actor is three async methods —
-`setup` once, `handle` per message, `teardown` on shutdown — over `&mut self`,
-so per-actor state is just struct fields, no locking (a single task drives each
+the outcome, and pulls the next. An actor's one required method is an async `handle`
+per message over `&mut self` (`setup` once and `teardown` on shutdown are
+optional, both defaulting to no-op; a native actor can even be a bare closure via
+`from_fn`), so per-actor state is just struct fields, no locking (a single task drives each
 actor, so `&mut self` is sound across `.await`). A Rust `handle` can `.await`
 I/O without blocking the runtime thread; handling is still sequential, one
 `handle` in flight per actor.

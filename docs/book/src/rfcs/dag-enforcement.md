@@ -6,7 +6,7 @@
 
 ## Concept
 
-Fuchsia graphs are acyclic. `add_edge(from, to)` **rejects any edge that would close
+Fuchsia graphs are acyclic. `add_edge` **rejects any edge that would close
 a cycle** — returning a new `EngineError::Cycle` and leaving the graph unchanged — so
 a running graph can never contain a back-edge. (`add_edge` already returns
 `Result<(), EngineError>`, so this adds a failure case, not a signature change.)
