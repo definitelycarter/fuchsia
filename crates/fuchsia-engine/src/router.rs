@@ -215,16 +215,25 @@ impl RouterState {
   }
 
   /// Drop a single node from the routing table so it stops resolving as a
-  /// routable target — its mailbox, the edges it owns, its port declarations,
-  /// and its counters. Called when the runtime reports the node *died* (its task
-  /// exited abnormally): an upstream emit to a dead node now reads as `no_route`
-  /// (shed), rather than offering into a permanently dead mailbox. Edges *into*
-  /// this node from elsewhere are left to resolve to nothing — the same graceful
-  /// drop `route` already handles for a missing target. Idempotent: a second
-  /// call (or a node already gone) is a no-op.
+  /// routable target — its mailbox, its port declarations, and its counters.
+  /// Called when the runtime reports the node *died* (its task exited
+  /// abnormally): an upstream emit to a dead node now reads as `no_route` (shed),
+  /// rather than offering into a permanently dead mailbox. Edges *into* this node
+  /// from elsewhere are left to resolve to nothing — the same graceful drop
+  /// `route` already handles for a missing target. Idempotent: a second call (or
+  /// a node already gone) is a no-op.
+  ///
+  /// The node's own **outgoing** edges are deliberately **kept**: a dead node
+  /// never emits, so they're dormant, but `Engine::restart_node` revival
+  /// re-registers only `targets`/`ports`/`counters` — not edges — so removing
+  /// them here would leave a *revived* node unable to emit (its outputs silently
+  /// `no_route`). They're cleaned by `remove_group` when the node's graph is torn
+  /// down. (A permanently-dead, never-revived node's edges thus linger until its
+  /// graph is removed — harmless, since route never traverses a non-target's
+  /// outgoing edges; the one cost is that `add_edge`'s cycle walk still sees
+  /// them, a negligible, conservative effect.)
   pub(crate) fn deregister(&mut self, id: &ActorId) {
     self.targets.remove(id);
-    self.edges.remove(id);
     self.ports.remove(id);
     self.counters.remove(id);
   }

@@ -690,6 +690,7 @@ dependencies = [
  "criterion",
  "fuchsia-actor",
  "fuchsia-transport",
+ "futures-util",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",

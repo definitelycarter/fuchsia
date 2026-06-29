@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use bson::Document;
 
@@ -84,7 +85,14 @@ pub trait ActorCreator: Send + Sync + 'static {
 }
 
 pub struct ActorFactory {
-  creators: HashMap<String, Box<dyn ActorCreator>>,
+  // `Arc<dyn ActorCreator>`, not `Box`, so the restart supervisor can hold a
+  // refcount-bumping clone of a node's creator as part of its rebuild recipe —
+  // rebuilding a crashed actor calls `create` on the *same* creator the spawn
+  // used. The creator is `Send + Sync + 'static`, so sharing it across the
+  // detached supervisor task is sound; a `Box` could not be shared without
+  // re-registering. Lookups (`create` / `output_ports`) read through the `Arc`
+  // exactly as they read through the `Box` before — no per-message change.
+  creators: HashMap<String, Arc<dyn ActorCreator>>,
 }
 
 impl ActorFactory {
@@ -95,7 +103,7 @@ impl ActorFactory {
   }
 
   pub fn register(&mut self, type_name: impl Into<String>, creator: impl ActorCreator) {
-    self.creators.insert(type_name.into(), Box::new(creator));
+    self.creators.insert(type_name.into(), Arc::new(creator));
   }
 
   /// Register a closure directly as a node type — none of the `struct`,
@@ -140,6 +148,20 @@ impl ActorFactory {
       .get(type_name)
       .ok_or_else(|| ActorError::UnknownType(type_name.to_owned()))?
       .create(config, caps)
+  }
+
+  /// The registered creator for `type_name`, as a refcount-bumping clone of the
+  /// shared [`Arc`] — the restart supervisor keeps this in its rebuild recipe so
+  /// it can re-`create` a crashed actor without holding the whole factory. Same
+  /// name-keyed lookup [`create`](Self::create) does, so the two cannot drift.
+  pub fn creator(&self, type_name: &str) -> Result<Arc<dyn ActorCreator>, ActorError> {
+    self
+      .creators
+      .get(type_name)
+      // Refcount bump of the shared creator so the supervisor can outlive this
+      // borrow; the creator is `Send + Sync + 'static`.
+      .map(Arc::clone)
+      .ok_or_else(|| ActorError::UnknownType(type_name.to_owned()))
   }
 
   /// The output ports a registered type advertises for `config` — the engine

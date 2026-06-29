@@ -13,6 +13,7 @@ use fuchsia_transport::{
 use crate::error::RuntimeError;
 use crate::registry::{ActorHandle, ActorRegistry};
 use crate::schedule::TokioSchedule;
+use crate::supervisor::{self, RestartControl};
 
 /// A reaction to a node's death, installed on the [`Runtime`] by the layer above
 /// it (the engine). Called **once**, on the supervisor task, with the dead
@@ -117,6 +118,17 @@ impl Runtime {
     // engine can validate edges against them. Same name-keyed lookup `create`
     // just did, so the two cannot drift.
     let output_ports = self.factory.output_ports(type_name, config)?;
+    // A node that opted into restart (`max_restarts > 0`) needs a *rebuild
+    // recipe* the supervisor keeps — the creator (a refcount-bumped `Arc`), so it
+    // can re-`create` a crashed actor. A default node (`max_restarts == 0`) keeps
+    // the lean slice-1 path and never builds a recipe, so it pays nothing here.
+    // The lookup is the same name-keyed one `create`/`output_ports` just did, so
+    // it cannot fail or drift; pulled now while `type_name` is in hand.
+    let creator = if config.failure.restart.max_restarts > 0 {
+      Some(self.factory.creator(type_name)?)
+    } else {
+      None
+    };
     // The node's `emit` sink, pulled from the same capability bag the actor was
     // built from (`caps` is only *borrowed* by `create`, so it's still owned
     // here). The run loop holds its own handle so it can emit the error envelope
@@ -134,6 +146,18 @@ impl Runtime {
     let dead_letter = caps.get::<dyn DeadLetter>();
     let ctx = Self::context(&actor_id);
 
+    // The rebuild recipe ingredients, populated **only** for a restart-enabled
+    // node; a default node carries `None`s and pays no extra clone. `caps` is
+    // moved (it was only borrowed by `create`, so this is free); `config` is a
+    // cold per-spawn clone, gated so a default node never pays it.
+    let restart_enabled = creator.is_some();
+    let recipe_caps = if restart_enabled { Some(caps) } else { None };
+    let recipe_config = if restart_enabled {
+      Some(config.clone())
+    } else {
+      None
+    };
+
     Ok(Spawning {
       actor,
       ctx,
@@ -150,6 +174,9 @@ impl Runtime {
       failure: config.failure.clone(),
       emit,
       dead_letter,
+      creator,
+      caps: recipe_caps,
+      config: recipe_config,
     })
   }
 
@@ -158,12 +185,18 @@ impl Runtime {
   /// another spawn may have committed the same id while `setup` ran outside the
   /// lock, in which case the prepared actor is dropped.
   ///
-  /// Hands back the node's declared [`OutputPorts`] alongside its mailbox/health
-  /// so the engine can store the declaration and validate edges against it.
-  pub fn commit(
-    &mut self,
-    spawning: Spawning,
-  ) -> Result<(MailboxTx, Arc<Health>, OutputPorts), RuntimeError> {
+  /// Hands back a [`Committed`]: the node's mailbox/health, its declared
+  /// [`OutputPorts`], and — **only** for a restart-enabled node — a
+  /// [`RestartControl`] the engine keeps to drive `restart_node`.
+  ///
+  /// Two per-node task shapes, chosen by the restart budget:
+  /// - `max_restarts == 0` (default): the lean slice-1 pair —
+  ///   [`run_actor`] (moves in `rx`, unwinds on a `handle` panic) watched by
+  ///   [`supervise`]. **No** new per-message cost.
+  /// - `max_restarts > 0`: a single [`supervise_with_restart`] task that owns
+  ///   `rx` + the rebuild recipe and catches `handle` panics so the mailbox
+  ///   survives a crash.
+  pub fn commit(&mut self, spawning: Spawning) -> Result<Committed, RuntimeError> {
     let Spawning {
       actor,
       ctx,
@@ -176,6 +209,9 @@ impl Runtime {
       failure,
       emit,
       dead_letter,
+      creator,
+      caps,
+      config,
     } = spawning;
 
     let mut registry = self.registry.lock().map_err(|_| RuntimeError::Lock)?;
@@ -189,7 +225,7 @@ impl Runtime {
       // owned id of its own (it outlives this call), matching how `add_node` /
       // `register` already clone the id on these cold paths.
       actor_id.clone(),
-      type_name,
+      type_name.clone(),
       // Refcount bump of the mpsc sender so the registry keeps a routable copy
       // while the caller (the engine) gets one for its router.
       tx.clone(),
@@ -197,48 +233,84 @@ impl Runtime {
       health.clone(),
     );
 
-    // Keep the actor's `JoinHandle` (previously discarded) and hand it, with the
-    // node's identity / health / stop flag, to a per-node **supervisor** task.
-    // The supervisor awaits the actor task and turns its exit into a lifecycle
-    // event: a panic (or an abnormal exit) deregisters the node and records a
-    // death, while a clean stop does neither. This is also the seam the future
-    // restart slice hooks into — the supervisor is the natural owner of the
-    // handle and the rebuild recipe.
-    // The run loop needs its own owned `ActorId` to stamp dead letters with the
-    // failing node (the supervisor keeps the other for deregistration). A real
-    // `String`-backed clone, but `commit` is a cold per-spawn path — the same
-    // place `ActorHandle::new` and the supervisor already each take an owned id.
-    let actor_task = tokio::spawn(run_actor(
-      actor,
-      ctx,
-      rx,
-      failure,
-      emit,
-      dead_letter,
-      actor_id.clone(),
-    ));
-    tokio::spawn(supervise(
-      actor_task,
-      actor_id,
-      // Refcount bumps: the supervisor shares the same health counters and stop
-      // flag as the registry handle.
-      health.clone(),
-      handle.stopping(),
-      // A **weak** handle to the registry, not a strong one: the registry holds
-      // every node's mailbox sender, so a strong ref here would keep all those
-      // senders alive and a dropped `Runtime` could never close its actors'
-      // mailboxes (teardown would never run). Weak lets the registry drop with
-      // the `Runtime`; on death the supervisor upgrades to deregister, and a
-      // gone registry just means the whole runtime is already torn down.
-      Arc::downgrade(&self.registry),
-      // Refcount bump of the installed listener, if any.
-      self.death_listener.clone(),
-    ));
+    // Branch on the restart budget. A restart-enabled node (its `creator` /
+    // `caps` / `config` recipe ingredients were populated by `prepare`) goes onto
+    // the restart supervisor; everything else keeps the lean slice-1 pair, paying
+    // nothing new.
+    let restart = match (creator, caps, config) {
+      (Some(creator), Some(caps), Some(config)) => {
+        let control = supervisor::restart_control();
+        let recipe = supervisor::RestartRecipe {
+          creator,
+          type_name,
+          config,
+          caps,
+          ctx,
+          // The supervisor needs an owned id for the recipe (run loop / dead
+          // letters); a cold per-spawn `String` clone, like `ActorHandle::new`.
+          node: actor_id.clone(),
+          failure: failure.clone(),
+          emit,
+          dead_letter,
+        };
+        tokio::spawn(supervisor::supervise_with_restart(
+          actor,
+          recipe,
+          rx,
+          // A **weak** sender so a revived node can be re-registered without the
+          // supervisor pinning `rx` open against a clean `stop`/`remove_graph`.
+          tx.downgrade(),
+          failure.restart.clone(),
+          // Refcount bumps: the supervisor shares health + stop flag with the
+          // registry handle.
+          health.clone(),
+          handle.stopping(),
+          Arc::downgrade(&self.registry),
+          self.death_listener.clone(),
+          // Refcount bump (Arc inside) so the engine keeps the other half.
+          control.clone(),
+        ));
+        Some(control)
+      }
+      // Default node: slice 1's pair, unchanged. Keep the actor's `JoinHandle`
+      // and hand it to a per-node supervisor that turns its exit into a lifecycle
+      // event — a panic / abnormal exit deregisters + records a death; a clean
+      // stop does neither.
+      _ => {
+        let actor_task = tokio::spawn(run_actor(
+          actor,
+          ctx,
+          rx,
+          failure,
+          emit,
+          dead_letter,
+          actor_id.clone(),
+        ));
+        tokio::spawn(supervise(
+          actor_task,
+          actor_id.clone(),
+          health.clone(),
+          handle.stopping(),
+          // A **weak** handle to the registry, not a strong one: the registry
+          // holds every node's mailbox sender, so a strong ref would keep all
+          // those senders alive and a dropped `Runtime` could never close its
+          // actors' mailboxes. Weak lets the registry drop with the `Runtime`.
+          Arc::downgrade(&self.registry),
+          self.death_listener.clone(),
+        ));
+        None
+      }
+    };
 
     registry.insert(handle);
     drop(registry);
 
-    Ok((tx, health, output_ports))
+    Ok(Committed {
+      mailbox: tx,
+      health,
+      output_ports,
+      restart,
+    })
   }
 
   /// Spawn an actor end to end — [`prepare`](Self::prepare), `setup`,
@@ -255,7 +327,13 @@ impl Runtime {
   ) -> Result<(MailboxTx, Arc<Health>, OutputPorts), RuntimeError> {
     let mut spawning = self.prepare(actor_id, type_name, config, caps)?;
     spawning.setup().await?;
-    self.commit(spawning)
+    // Direct callers (tests, a standalone runtime) want only the mailbox/health/
+    // ports; the restart control is the engine's concern, so it is dropped here.
+    // Dropping a restart-enabled node's control still leaves the supervisor task
+    // running — `restart_node` is simply unavailable without going through the
+    // engine, which is the supported path for it.
+    let committed = self.commit(spawning)?;
+    Ok((committed.mailbox, committed.health, committed.output_ports))
   }
 
   pub async fn deliver(&self, actor_id: &ActorId, msg: Message) -> Result<(), RuntimeError> {
@@ -313,6 +391,20 @@ impl Default for Runtime {
   }
 }
 
+/// What [`Runtime::commit`] hands back once a node is running: its mailbox and
+/// health (for the router + ingress), its declared [`OutputPorts`] (for edge
+/// validation), and — **only** for a restart-enabled node — the
+/// [`RestartControl`] the engine retains to drive `Engine::restart_node`. A
+/// default node's `restart` is `None`.
+pub struct Committed {
+  pub mailbox: MailboxTx,
+  pub health: Arc<Health>,
+  pub output_ports: OutputPorts,
+  /// The restart control handle for a restart-enabled node (`max_restarts > 0`);
+  /// `None` for a default node, which cannot be force-restarted or revived.
+  pub restart: Option<RestartControl>,
+}
+
 /// An actor created but not yet running, produced by [`Runtime::prepare`]: the
 /// [`Actor`] instance, its identity, and its mailbox. The caller runs
 /// [`setup`](Spawning::setup) on it **without holding any runtime lock**, then
@@ -346,6 +438,20 @@ pub struct Spawning {
   /// or triggers a `fail` stop, instead of dropping + counting it. `None` keeps
   /// slice 2's count-and-drop behavior unchanged.
   dead_letter: Option<Arc<dyn DeadLetter>>,
+  /// The node's creator, kept **only** for a restart-enabled node
+  /// (`failure.restart.max_restarts > 0`) so its supervisor can rebuild a crashed
+  /// actor. `None` for a default node, which keeps the lean slice-1 path. A
+  /// refcount bump of the shared `Arc<dyn ActorCreator>`.
+  creator: Option<Arc<dyn ActorCreator>>,
+  /// The capability bag, kept **only** for a restart-enabled node so the
+  /// supervisor can re-`create` from the *same* bag (re-offering the injected
+  /// `schedule`/`emit`). Moved here (it was only borrowed by `create`), so it's
+  /// free; `None` for a default node.
+  caps: Option<ActorCapabilities>,
+  /// The node's config, kept **only** for a restart-enabled node so the
+  /// supervisor can re-`create` with it. A cold per-spawn clone gated to the
+  /// restart path; `None` for a default node, which pays no clone.
+  config: Option<ActorConfig>,
 }
 
 impl Spawning {
@@ -370,10 +476,10 @@ impl Spawning {
 /// - `dead_letter` — the optional product-provided sink for an exhausted `retry`
 ///   / a `fail` stop; `None` falls back to count-and-drop.
 /// - `node` — the failing node's id, stamped onto a [`DeadLettered`].
-struct FailureSinks<'a> {
-  emit: &'a dyn Emit,
-  dead_letter: Option<&'a dyn DeadLetter>,
-  node: &'a ActorId,
+pub(crate) struct FailureSinks<'a> {
+  pub(crate) emit: &'a dyn Emit,
+  pub(crate) dead_letter: Option<&'a dyn DeadLetter>,
+  pub(crate) node: &'a ActorId,
 }
 
 async fn run_actor(
@@ -460,7 +566,7 @@ async fn run_actor(
 /// preserve it, but reports `Err` — it must not tell a durable caller "success"
 /// when the node just crashed on their input. Survive-and-quarantine → `Ok`;
 /// die-or-drop → the real outcome.
-async fn handle_with_policy(
+pub(crate) async fn handle_with_policy(
   actor: &mut Box<dyn Actor>,
   ctx: &ActorContext,
   on_error: &OnError,
@@ -770,24 +876,49 @@ async fn supervise(
     tracing::error!(node = %actor_id, "actor task exited unexpectedly");
   }
 
+  record_death(
+    &actor_id,
+    &health,
+    registry.as_ref(),
+    death_listener.as_ref(),
+  );
+}
+
+/// Record a node's permanent death and tear down its addressing: bump the
+/// distinct `died` counter on [`Health`], deregister it from the runtime's
+/// [`ActorRegistry`] so it stops resolving for `deliver`, and fire the
+/// [`DeathListener`] so the engine drops it from its router. Shared by the
+/// non-restart [`supervise`] path and the restart supervisor's
+/// permanent-death (budget-exhausted) path, so a death looks identical however
+/// it is reached.
+///
+/// `registry` is the *upgraded* strong handle (or `None` if the whole runtime
+/// has already been dropped). Best-effort on a poisoned lock — the death is
+/// already on `Health`, and a poisoned registry means the process is already
+/// unwinding.
+pub(crate) fn record_death(
+  actor_id: &ActorId,
+  health: &Health,
+  registry: Option<&Arc<Mutex<ActorRegistry>>>,
+  death_listener: Option<&DeathListener>,
+) {
   // Observable as a distinct death on the node's shared `Health` (the `died`
   // counter, not `errored`).
   health.record_death();
 
   // Deregister from the runtime's address book so the node stops resolving for
-  // `deliver`. Best-effort on a poisoned lock — the death is already recorded on
-  // `Health`, and a poisoned registry means the process is already unwinding.
-  if let Some(registry) = &registry
+  // `deliver`.
+  if let Some(registry) = registry
     && let Ok(mut registry) = registry.lock()
   {
-    registry.remove(&actor_id);
+    registry.remove(actor_id);
   }
 
   // Tell the layer above (the engine) so it drops the node from its router,
   // where routed deliveries actually resolve. Runs last so the runtime's own
   // state is consistent first.
   if let Some(listener) = death_listener {
-    listener(&actor_id);
+    listener(actor_id);
   }
 }
 
@@ -2082,5 +2213,314 @@ mod tests {
       panic!("envelope payload should be JSON");
     };
     assert_eq!(body["payload"], serde_json::json!({ "byte_len": 5 }));
+  }
+
+  // ---- restart (slice 5) ------------------------------------------------------
+
+  /// Shared observation for a restart-supervised node: how many incarnations
+  /// have been `setup` (each rebuild bumps it), every message a *surviving*
+  /// incarnation handled, and how many of the first handle calls should panic.
+  struct RestartProbe {
+    /// `handle` calls 1..=`panic_first` panic; after that they record + succeed.
+    panic_first: u32,
+    handle_calls: AtomicU64,
+    setups: AtomicU64,
+    handled: Mutex<Vec<String>>,
+    notify: Notify,
+  }
+
+  impl RestartProbe {
+    fn new(panic_first: u32) -> Arc<Self> {
+      Arc::new(Self {
+        panic_first,
+        handle_calls: AtomicU64::new(0),
+        setups: AtomicU64::new(0),
+        handled: Mutex::new(Vec::new()),
+        notify: Notify::new(),
+      })
+    }
+  }
+
+  /// An actor that panics on its first `panic_first` handle calls (counted across
+  /// incarnations on the shared probe), then records + succeeds. Each rebuild
+  /// runs `setup`, bumping the probe's incarnation count — so a test can observe
+  /// that a fresh `&mut self` ran `setup` again.
+  struct RestartActor {
+    probe: Arc<RestartProbe>,
+  }
+
+  #[async_trait]
+  impl Actor for RestartActor {
+    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+      self.probe.setups.fetch_add(1, Ordering::SeqCst);
+      Ok(())
+    }
+    async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+      let n = self.probe.handle_calls.fetch_add(1, Ordering::SeqCst) + 1;
+      if (n as u32) <= self.probe.panic_first {
+        // Panic mid-handle: the restart supervisor catches this, discards the
+        // actor, and rebuilds — the in-flight message is dropped, not re-fed.
+        panic!("intentional panic in handle (call {n})");
+      }
+      self.probe.handled.lock().unwrap().push(msg.type_.clone());
+      self.probe.notify.notify_one();
+      Ok(())
+    }
+  }
+
+  struct RestartCreator {
+    probe: Arc<RestartProbe>,
+  }
+
+  impl ActorCreator for RestartCreator {
+    fn create(
+      &self,
+      _config: &ActorConfig,
+      _caps: &ActorCapabilities,
+    ) -> Result<Box<dyn Actor>, ActorError> {
+      Ok(Box::new(RestartActor {
+        probe: self.probe.clone(),
+      }))
+    }
+  }
+
+  /// Spawn a `RestartActor` under a restart policy, returning its mailbox, its
+  /// health, and the shared probe. Keeps the caller's `tx` (returned) so a test
+  /// controls when the mailbox closes; the registry holds its own.
+  async fn spawn_restartable(
+    rt: &mut Runtime,
+    id: &str,
+    panic_first: u32,
+    policy: FailurePolicy,
+    sink: Option<Arc<RecorderDeadLetter>>,
+  ) -> (MailboxTx, Arc<Health>, Arc<RestartProbe>) {
+    let probe = RestartProbe::new(panic_first);
+    rt.register(
+      "restart",
+      RestartCreator {
+        probe: probe.clone(),
+      },
+    );
+    let config = ActorConfig {
+      failure: policy,
+      ..Default::default()
+    };
+    let mut caps = ActorCapabilities::new();
+    if let Some(sink) = sink {
+      caps.insert::<dyn DeadLetter>(sink);
+    }
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(actor_id(id), "restart", &config, caps)
+      .await
+      .unwrap();
+    (tx, health, probe)
+  }
+
+  #[tokio::test]
+  async fn restart_rebuilds_and_a_queued_message_is_processed_by_the_new_incarnation() {
+    // A node that panics on its first handle, with budget. We queue *two*
+    // messages up front: the first panics (caught → rebuild), the second is
+    // drained by the fresh incarnation. The rebuild is observable (a second
+    // `setup`), the queue survived the crash, and the node stays registered.
+    let mut rt = Runtime::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (tx, health, probe) = spawn_restartable(
+      &mut rt,
+      "a",
+      1, // first handle panics, then recover
+      FailurePolicy::restart(3, backoff),
+      None,
+    )
+    .await;
+
+    // Queue both messages before the first is even handled, so the second is
+    // genuinely waiting in the *same* mailbox across the crash.
+    rt.deliver(&actor_id("a"), Message::empty("boom"))
+      .await
+      .unwrap();
+    rt.deliver(&actor_id("a"), Message::empty("survivor"))
+      .await
+      .unwrap();
+
+    // Wait until the surviving incarnation handles the second message.
+    loop {
+      if !probe.handled.lock().unwrap().is_empty() {
+        break;
+      }
+      probe.notify.notified().await;
+    }
+
+    // The fresh incarnation handled the queued "survivor"; the panicking "boom"
+    // was dropped, not re-fed (so it does not appear, and didn't loop).
+    assert_eq!(probe.handled.lock().unwrap().as_slice(), &["survivor"]);
+    // Two incarnations were set up: the initial spawn + one rebuild after the
+    // crash — proving a fresh `&mut self` with `setup` re-run.
+    assert_eq!(probe.setups.load(Ordering::SeqCst), 2);
+    // The panic was *not* recorded as a per-message error (the ack dropped); the
+    // recovered message was handled.
+    assert_eq!(health.handled(), 1);
+    // The node never deregistered — a transient restart keeps it resolving.
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+    drop(tx);
+  }
+
+  #[tokio::test]
+  async fn restart_budget_exhausted_dies_and_drains_queue_to_dead_letter() {
+    // Always panics; max_restarts=2 → 3 incarnations, each crashing on one
+    // message it pulls (a restart is triggered by a *crash*, which needs a
+    // message to crash on). So three crash-messages exhaust the budget; the
+    // fourth — a bystander queued behind them — the dead node never handles and
+    // is drained to the dead-letter sink with reason NodeDied.
+    let mut rt = Runtime::new();
+    let (dead, notify) = record_deaths(&mut rt);
+    let sink = RecorderDeadLetter::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (tx, health, probe) = spawn_restartable(
+      &mut rt,
+      "a",
+      u32::MAX, // always panic
+      FailurePolicy::restart(2, backoff),
+      Some(sink.clone()),
+    )
+    .await;
+
+    // Three crash-messages (one per incarnation) + a bystander behind them.
+    for label in ["crash-1", "crash-2", "crash-3"] {
+      rt.deliver(&actor_id("a"), Message::empty(label))
+        .await
+        .unwrap();
+    }
+    rt.deliver(&actor_id("a"), Message::empty("bystander"))
+      .await
+      .unwrap();
+
+    // The death signal fires once the budget is exhausted.
+    notify.notified().await;
+
+    // 3 incarnations: initial + 2 restarts, each crashing on one message; nothing
+    // was handled to completion.
+    assert_eq!(probe.setups.load(Ordering::SeqCst), 3);
+    assert_eq!(health.handled(), 0);
+    assert_eq!(health.died(), 1);
+    assert_eq!(dead.lock().unwrap().as_slice(), &[actor_id("a")]);
+
+    // Deregistered — stops resolving.
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+
+    // The bystander was drained to the dead-letter sink (reason NodeDied,
+    // restarts=2). The crash messages' acks just dropped (not letters).
+    let letters = sink.letters.lock().unwrap();
+    assert_eq!(letters.len(), 1);
+    assert_eq!(letters[0].msg.type_, "bystander");
+    assert_eq!(letters[0].node, actor_id("a"));
+    assert_eq!(
+      letters[0].reason,
+      DeadLetterReason::NodeDied { restarts: 2 }
+    );
+    drop(tx);
+  }
+
+  #[tokio::test]
+  async fn default_node_panic_is_a_death_with_no_restart() {
+    // Regression guard for the perf-critical default path: max_restarts=0 (the
+    // default) keeps slice 1's behavior exactly — a panic is a death, the node is
+    // never rebuilt, and it deregisters. Identical to
+    // `panicking_handle_is_detected_as_a_death`, but via the restart-aware
+    // `commit` to prove the default branch is unchanged.
+    let mut rt = Runtime::new();
+    let (dead, notify) = record_deaths(&mut rt);
+    // FailurePolicy::default() = max_restarts 0.
+    let (tx, health, probe) =
+      spawn_restartable(&mut rt, "a", u32::MAX, FailurePolicy::default(), None).await;
+    drop(tx);
+
+    rt.deliver(&actor_id("a"), Message::empty("boom"))
+      .await
+      .unwrap();
+    notify.notified().await;
+
+    // Exactly one incarnation — no rebuild.
+    assert_eq!(probe.setups.load(Ordering::SeqCst), 1);
+    assert_eq!(health.died(), 1);
+    assert_eq!(dead.lock().unwrap().as_slice(), &[actor_id("a")]);
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn fail_policy_is_not_restarted_even_with_budget() {
+    // A `fail`-policy stop is a *deliberate* shutdown, so it is never restarted
+    // even with restart budget available. Build a policy with both `fail` and a
+    // restart budget; an errored handle stops the node permanently.
+    let mut rt = Runtime::new();
+    let (dead, notify) = record_deaths(&mut rt);
+    let probe = FailProbe::new(u32::MAX); // always errors (returns Err, not panic)
+    rt.register(
+      "fail",
+      FailCreator {
+        probe: probe.clone(),
+      },
+    );
+    // Both fail and a restart budget on the same policy. Both `FailurePolicy` and
+    // `RestartPolicy` are `#[non_exhaustive]`, so build from a constructor then
+    // mutate the public field rather than a struct literal.
+    let mut policy = FailurePolicy::restart(5, Backoff::fixed(Duration::from_millis(1)));
+    policy.on_error = OnError::Fail;
+    let config = ActorConfig {
+      failure: policy,
+      ..Default::default()
+    };
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(actor_id("a"), "fail", &config, ActorCapabilities::new())
+      .await
+      .unwrap();
+    drop(tx);
+
+    rt.deliver(&actor_id("a"), Message::empty("boom"))
+      .await
+      .unwrap();
+    notify.notified().await;
+
+    // Exactly one handle call — the `fail` stop was *not* restarted despite the
+    // budget. The node died once and stays dead.
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(health.died(), 1);
+    assert_eq!(dead.lock().unwrap().as_slice(), &[actor_id("a")]);
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn restart_waits_the_backoff_between_rebuilds() {
+    // Loose, non-flaky lower bound: always-panic with max_restarts=2 and a 30ms
+    // fixed backoff. Each incarnation crashes on one queued message, so three
+    // crash-messages exhaust the budget; the two backoffs (between incarnations
+    // 1→2 and 2→3) must add up to at least ~2×30ms before the death fires.
+    let mut rt = Runtime::new();
+    let (_dead, notify) = record_deaths(&mut rt);
+    let backoff = Backoff::fixed(Duration::from_millis(30));
+    let (tx, _health, _probe) = spawn_restartable(
+      &mut rt,
+      "a",
+      u32::MAX,
+      FailurePolicy::restart(2, backoff),
+      None,
+    )
+    .await;
+    drop(tx);
+
+    let start = Instant::now();
+    for label in ["crash-1", "crash-2", "crash-3"] {
+      rt.deliver(&actor_id("a"), Message::empty(label))
+        .await
+        .unwrap();
+    }
+    notify.notified().await;
+    let elapsed = start.elapsed();
+
+    // 2 restarts → 2 backoffs of 30ms between the three incarnations → at least
+    // ~50ms even with scheduling slack. Lower bound only, so it stays non-flaky.
+    assert!(
+      elapsed >= Duration::from_millis(50),
+      "expected restart backoff, took {elapsed:?}"
+    );
   }
 }

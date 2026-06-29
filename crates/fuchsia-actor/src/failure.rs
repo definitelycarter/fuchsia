@@ -31,6 +31,12 @@ pub struct FailurePolicy {
   /// What the runtime does when `handle` returns `Err`. Defaults to
   /// [`OnError::Continue`] — count + drop, today's behavior.
   pub on_error: OnError,
+  /// Whether (and how) the runtime rebuilds this node after it *dies* — a panic
+  /// (caught and isolated) or an abnormal task exit. Defaults to
+  /// [`RestartPolicy::default`] = `max_restarts: 0` = **never restart**, so an
+  /// unset policy keeps slice 1's behavior exactly: a death deregisters the node
+  /// and stays dead, with no new per-message cost. See [`RestartPolicy`].
+  pub restart: RestartPolicy,
 }
 
 impl FailurePolicy {
@@ -40,6 +46,7 @@ impl FailurePolicy {
   pub fn retry(max: u32, backoff: Backoff) -> Self {
     Self {
       on_error: OnError::Retry { max, backoff },
+      ..Default::default()
     }
   }
 
@@ -47,6 +54,7 @@ impl FailurePolicy {
   pub fn fail() -> Self {
     Self {
       on_error: OnError::Fail,
+      ..Default::default()
     }
   }
 
@@ -56,8 +64,63 @@ impl FailurePolicy {
   pub fn route_to_error() -> Self {
     Self {
       on_error: OnError::RouteToError,
+      ..Default::default()
     }
   }
+
+  /// A policy that rebuilds the node up to `max_restarts` times with `backoff`
+  /// between rebuilds when it *dies* (a panic, or an abnormal exit) — leaving the
+  /// `on_error` policy at its default. A small constructor so callers don't
+  /// depend on the (non-exhaustive) struct shape; for a node that wants both an
+  /// error policy and a restart policy, build the struct with `..Default::default()`.
+  pub fn restart(max_restarts: u32, backoff: Backoff) -> Self {
+    Self {
+      restart: RestartPolicy {
+        max_restarts,
+        backoff,
+      },
+      ..Default::default()
+    }
+  }
+}
+
+/// How (and whether) the runtime rebuilds a node after it **dies** — a panic in
+/// `handle` (caught and isolated) or an abnormal task exit. Distinct from
+/// [`OnError`], which governs a `handle` that *returns* `Err`: a death is a
+/// crash, not a deliberate policy outcome.
+///
+/// `max_restarts: 0` (the [`Default`]) means **never restart**, so a node with
+/// an unset policy behaves exactly as before this slice: a death is permanent —
+/// deregister + record on `Health` — and the node pays **no** new per-message
+/// cost (the runtime keeps the lean single-task path for it). Opting in
+/// (`max_restarts > 0`) moves the node onto a supervisor that owns its mailbox
+/// and rebuild recipe, so it can be rebuilt on the *same* mailbox across a death
+/// (the queue survives, routing is uninterrupted).
+///
+/// A `fail`-policy stop is **never** a restart trigger — it's a deliberate
+/// shutdown, not a crash. Only an undeliberate death (panic / abnormal exit)
+/// consumes the restart budget.
+///
+/// **Restart requires `panic = unwind`** (the default). The supervisor recovers a
+/// crashed handler by catching its panic with `catch_unwind`; under
+/// `panic = abort` a panic terminates the whole process instead, so there is
+/// nothing left to restart. A host that compiles with `panic = abort` should not
+/// rely on restart for crash recovery.
+///
+/// `#[non_exhaustive]` + `#[serde(default)]` so it's a non-breaking field add and
+/// a product's JSON can give partials (or nothing) and still deserialize.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct RestartPolicy {
+  /// How many times the runtime rebuilds the node after a death before giving up
+  /// and letting it die permanently. `0` (the default) = never restart. The
+  /// budget is per-node and is **reset** by a manual `Engine::restart_node`.
+  pub max_restarts: u32,
+  /// The delay before each rebuild — reusing the same exponential [`Backoff`] as
+  /// the retry policy. The delay before the *n*-th rebuild (0-indexed) is
+  /// `backoff.delay_for(n)`, so repeated crashes back off rather than hot-loop.
+  pub backoff: Backoff,
 }
 
 /// What the runtime does when an actor's `handle` returns `Err`.
@@ -244,5 +307,40 @@ mod tests {
       FailurePolicy::route_to_error().on_error,
       OnError::RouteToError
     );
+  }
+
+  #[test]
+  fn default_restart_never_restarts() {
+    // The default is restart-off — an unset policy keeps slice 1's behavior.
+    assert_eq!(FailurePolicy::default().restart.max_restarts, 0);
+  }
+
+  #[test]
+  fn restart_constructor_sets_budget_and_backoff() {
+    let p = FailurePolicy::restart(3, Backoff::fixed(Duration::from_millis(10)));
+    assert_eq!(p.restart.max_restarts, 3);
+    assert_eq!(p.restart.backoff, Backoff::fixed(Duration::from_millis(10)));
+    // The error policy is untouched — restart is orthogonal to on_error.
+    assert_eq!(p.on_error, OnError::Continue);
+  }
+
+  #[test]
+  fn deserializes_restart_from_json() {
+    // A product's JSON can give the restart block; absent fields default in.
+    let p: FailurePolicy =
+      serde_json::from_value(serde_json::json!({ "restart": { "max_restarts": 5 } }))
+        .expect("parse");
+    assert_eq!(p.restart.max_restarts, 5);
+    assert_eq!(p.restart.backoff, Backoff::default());
+  }
+
+  #[test]
+  fn restart_defaults_when_absent_from_json() {
+    // No `restart` block → never-restart default, so existing config is unchanged.
+    let p: FailurePolicy =
+      serde_json::from_value(serde_json::json!({ "on_error": { "policy": "fail" } }))
+        .expect("parse");
+    assert_eq!(p.restart.max_restarts, 0);
+    assert_eq!(p.on_error, OnError::Fail);
   }
 }

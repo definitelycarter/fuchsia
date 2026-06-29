@@ -7,6 +7,12 @@ description = "Actor lifecycle runtime for fuchsia"
 [dependencies]
 fuchsia-actor     = { path = "../fuchsia-actor" }
 fuchsia-transport = { path = "../fuchsia-transport" }
+# `FutureExt::catch_unwind` — used only by the restart supervisor to catch a
+# `handle` panic without unwinding the task that owns the mailbox. `default-
+# features = false` keeps it to the std futures-combinator core (no executor);
+# the restart-enabled path is the sole consumer, so a default node never touches
+# it.
+futures-util    = { version = "0.3", default-features = false, features = ["std"] }
 serde_json      = "1"
 thiserror       = "2"
 tokio           = { version = "1", features = ["rt", "sync", "macros", "time"] }

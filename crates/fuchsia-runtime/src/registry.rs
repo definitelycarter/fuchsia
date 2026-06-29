@@ -34,12 +34,33 @@ impl ActorHandle {
     mailbox: MailboxTx,
     health: Arc<Health>,
   ) -> Self {
+    Self::new_sharing(
+      id,
+      actor_type,
+      mailbox,
+      health,
+      Arc::new(AtomicBool::new(false)),
+    )
+  }
+
+  /// Like [`new`](Self::new), but reuses a **caller-provided** `stopping` flag
+  /// rather than minting a fresh one — so a re-inserted handle (a *revived*
+  /// restart-supervised node) shares the *same* flag its supervisor already
+  /// reads, keeping `stop`/`mark_stopping` honest across the revive. A
+  /// refcount bump of the shared flag.
+  pub fn new_sharing(
+    id: ActorId,
+    actor_type: impl Into<String>,
+    mailbox: MailboxTx,
+    health: Arc<Health>,
+    stopping: Arc<AtomicBool>,
+  ) -> Self {
     Self {
       id,
       actor_type: actor_type.into(),
       mailbox,
       health,
-      stopping: Arc::new(AtomicBool::new(false)),
+      stopping,
     }
   }
 

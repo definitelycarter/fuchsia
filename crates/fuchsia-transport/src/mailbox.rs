@@ -1,4 +1,7 @@
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc::{
+  self,
+  error::{TryRecvError, TrySendError},
+};
 
 use crate::delivery::Delivery;
 
@@ -70,6 +73,15 @@ impl MailboxRx {
   /// sender has been dropped.
   pub async fn recv(&mut self) -> Option<Delivery> {
     self.0.recv().await
+  }
+
+  /// Pull the next *already-queued* delivery **without** suspending. `Err` when
+  /// the mailbox is momentarily empty ([`TryRecvError::Empty`]) or every sender
+  /// is gone ([`TryRecvError::Disconnected`]). Used by the restart supervisor to
+  /// drain a permanently-dead node's surviving backlog to the dead-letter sink —
+  /// a synchronous sweep, not the await-for-more receive loop.
+  pub fn try_recv(&mut self) -> Result<Delivery, TryRecvError> {
+    self.0.try_recv()
   }
 }
 

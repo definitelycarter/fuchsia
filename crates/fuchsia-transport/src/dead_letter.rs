@@ -102,6 +102,20 @@ pub enum DeadLetterReason {
     /// The error string from the failed `handle`.
     error: String,
   },
+  /// The node **died permanently** — it crashed (a panic, or an abnormal exit)
+  /// and exhausted its restart budget — so the runtime drains whatever was still
+  /// queued in its mailbox here rather than dropping it. Unlike [`Failed`] (one
+  /// triggering message on a deliberate `fail`) this is each *bystander* message
+  /// that was waiting behind a crash. `restarts` is how many times the node was
+  /// rebuilt before giving up.
+  ///
+  /// [`Failed`]: DeadLetterReason::Failed
+  NodeDied {
+    /// How many times the node was restarted before its budget was exhausted and
+    /// it died permanently (`0` for a node that crashed with no budget to spend,
+    /// e.g. a default `max_restarts: 0` node would never reach this drain).
+    restarts: u32,
+  },
 }
 
 #[cfg(test)]
@@ -134,5 +148,21 @@ mod tests {
     assert_eq!(got[0].msg.type_, "boom");
     assert_eq!(got[0].correlation.as_str(), "run-1");
     assert_eq!(got[0].node, ActorId::new("n"));
+  }
+
+  #[test]
+  fn node_died_reason_carries_restart_count() {
+    // The permanent-death drain reason: a bystander message preserved after the
+    // node crashed and exhausted its restart budget.
+    let rec = Recorder(Mutex::new(Vec::new()));
+    rec.dead_letter(DeadLettered::new(
+      Message::empty("bystander"),
+      CorrelationId::from("run-2"),
+      ActorId::new("n"),
+      DeadLetterReason::NodeDied { restarts: 3 },
+    ));
+    let got = rec.0.lock().expect("lock");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].reason, DeadLetterReason::NodeDied { restarts: 3 });
   }
 }

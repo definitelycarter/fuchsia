@@ -1,12 +1,35 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorCreator, ActorId, Emit, Message};
-use fuchsia_runtime::Runtime;
-use fuchsia_transport::{Ack, CorrelationId, Delivery, Outcome};
+use fuchsia_actor::{
+  ActorCapabilities, ActorConfig, ActorCreator, ActorId, Emit, Message, OutputPorts,
+};
+use fuchsia_runtime::{RestartControl, Runtime, RuntimeError};
+use fuchsia_transport::{Ack, CorrelationId, Delivery, Health, MailboxTx, Outcome};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::error::EngineError;
 use crate::router::{RouteCounts, RoutedEmit, RouterState};
+
+/// What the engine retains for a restart-enabled node so it can drive
+/// `restart_node` — in particular, **revive** a permanently-dead node.
+///
+/// The retention of these bits is the single load-bearing decision of the
+/// restart-revival design: when a node's budget is exhausted, the runtime's
+/// death listener deregisters it from the router (dropping the router's copy of
+/// its mailbox/health/ports), but the supervisor task does **not** exit — it
+/// parks holding `rx` + the rebuild recipe. So the *recipe* lives on in the
+/// runtime; what the **engine** must separately keep is everything needed to put
+/// the node *back into the router* on revival (the router can't reconstruct a
+/// mailbox), plus the control handle to wake the parked supervisor. Keeping them
+/// here — rather than re-deriving them — is what makes "revive a dead node" a
+/// pure restore + signal, with no rebuild path duplicated in the engine.
+struct RestartHandle {
+  control: RestartControl,
+  mailbox: MailboxTx,
+  health: Arc<Health>,
+  output_ports: OutputPorts,
+}
 
 /// Routes messages between actors according to a graph's edges.
 ///
@@ -22,6 +45,11 @@ use crate::router::{RouteCounts, RoutedEmit, RouterState};
 pub struct Engine {
   runtime: Mutex<Runtime>,
   router: Arc<RwLock<RouterState>>,
+  // Restart handles for restart-enabled nodes, keyed by id — what `restart_node`
+  // needs to revive a dead node (restore its router entry) or force a live one.
+  // A separate `Mutex` (not under the runtime lock) since it's touched only on
+  // the cold `add_node` / `restart_node` paths, never per message.
+  restart_handles: Mutex<HashMap<ActorId, RestartHandle>>,
 }
 
 impl Engine {
@@ -48,6 +76,7 @@ impl Engine {
     Self {
       runtime: Mutex::new(runtime),
       router,
+      restart_handles: Mutex::new(HashMap::new()),
     }
   }
 
@@ -86,9 +115,9 @@ impl Engine {
     };
     spawning.setup().await?;
     // `commit` hands back the node's declared output ports (from its resolved
-    // creator) alongside the mailbox/health, so the router can store the
-    // declaration and validate edges against it at `add_edge`.
-    let (mailbox, health, output_ports) = {
+    // creator) alongside the mailbox/health, plus — for a restart-enabled node —
+    // a `RestartControl` the engine retains to drive `restart_node`.
+    let committed = {
       let mut runtime = self.runtime.lock().await;
       runtime.commit(spawning)?
     };
@@ -97,7 +126,87 @@ impl Engine {
       .router
       .write()
       .map_err(|_| EngineError::Lock)?
-      .register(id, mailbox, health, output_ports);
+      .register(
+        // Refcount bumps so the engine can keep its own routable copy of the
+        // node's mailbox/health for revival (see `restart_node`) while the router
+        // holds the live one. Cold per-`add_node` path.
+        id.clone(),
+        committed.mailbox.clone(),
+        committed.health.clone(),
+        committed.output_ports.clone(),
+      );
+
+    // Retain a *restart handle* for a restart-enabled node: the control + the
+    // bits needed to re-register a dead node's router entry on revival (the
+    // death listener removes it on permanent death, so the engine must keep its
+    // own copy to restore it). A default node gets no handle and cannot be
+    // restarted/revived. Cold path, only when the node opted in.
+    if let Some(control) = committed.restart {
+      self.restart_handles.lock().await.insert(
+        id,
+        RestartHandle {
+          control,
+          mailbox: committed.mailbox,
+          health: committed.health,
+          output_ports: committed.output_ports,
+        },
+      );
+    }
+    Ok(())
+  }
+
+  /// Force or revive a node's restart, the public face of the runtime's restart
+  /// supervisor (only a node spawned with `failure.restart.max_restarts > 0` can
+  /// be restarted; a default node returns [`EngineError::NotFound`]).
+  ///
+  /// - A node the router shows as **dead** (its budget was exhausted and it
+  ///   deregistered) is **revived**: its router entry is restored from the
+  ///   engine's retained restart handle so it resolves again, its supervisor's
+  ///   budget is reset, and it resumes draining its surviving mailbox.
+  /// - A **live** node with `force` is torn down (`teardown`) and rebuilt with
+  ///   fresh state, the mailbox surviving; its budget is reset.
+  /// - A **live** node **without** `force` is rejected as already-running
+  ///   ([`RuntimeError::AlreadyRunning`] via [`EngineError::Runtime`]).
+  ///
+  /// Either way a manual restart **resets** the automatic backoff/limit budget —
+  /// an operator's deliberate "try again," distinct from the automatic budget.
+  pub async fn restart_node(&self, id: &ActorId, force: bool) -> Result<(), EngineError> {
+    let handles = self.restart_handles.lock().await;
+    // No restart handle → either the node never existed or it is a default
+    // (restart-disabled) node, which cannot be restarted. Surfaced as NotFound.
+    let handle = handles
+      .get(id)
+      .ok_or_else(|| EngineError::NotFound(id.clone()))?;
+
+    if handle.control.is_dead() {
+      // Dead (parked) node → revive. Restore the router entry *first* (so it
+      // resolves the instant the supervisor resumes), then signal the revive.
+      // Reviving never needs `force`; a dead node always revives.
+      self
+        .router
+        .write()
+        .map_err(|_| EngineError::Lock)?
+        .register(
+          id.clone(),
+          // Refcount bumps of the retained mailbox/health/ports the engine kept
+          // precisely so a dead node's router entry can be restored.
+          handle.mailbox.clone(),
+          handle.health.clone(),
+          handle.output_ports.clone(),
+        );
+      handle.control.request_restart(false);
+      return Ok(());
+    }
+
+    // Live node: only a forced restart is allowed; otherwise it's already
+    // running. The router entry stays put (the mailbox survives), so nothing to
+    // re-register — just signal the supervisor to teardown + rebuild.
+    if !force {
+      return Err(EngineError::Runtime(RuntimeError::AlreadyRunning(
+        id.clone(),
+      )));
+    }
+    handle.control.request_restart(true);
     Ok(())
   }
 
@@ -197,6 +306,19 @@ impl Engine {
         runtime.stop(id)?;
       }
     }
+
+    // Drop the group's restart handles. For a restart-enabled node the engine
+    // holds the only remaining *strong* mailbox sender (the supervisor holds a
+    // weak one); dropping it here lets `rx` close after `runtime.stop` dropped
+    // the registry's sender, so the supervisor reaches a clean shutdown instead
+    // of staying alive on the engine's retained sender. Also stops a removed
+    // node from being revivable. `ids_in_group` covers live nodes; sweep the map
+    // by group to also clear any *parked-dead* node (no longer a router target).
+    self
+      .restart_handles
+      .lock()
+      .await
+      .retain(|id, _| id.group() != group);
 
     self
       .router

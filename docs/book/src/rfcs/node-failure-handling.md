@@ -1,6 +1,6 @@
 # RFC: Node Failure Handling
 
-> **Status: in progress — parts 1–4 shipped; restart + poison pending.** The
+> **Status: in progress — parts 1–5 shipped; poison quarantine pending.** The
 > three open questions are resolved (see [Decisions](#decisions)). Part 1: the runtime
 > keeps the actor task's `JoinHandle`, a per-node supervisor deregisters a dead node so
 > it stops resolving, records a distinct `Health::died` count, and surfaces a death
@@ -13,8 +13,18 @@
 > `retry` or hits `fail`, keyed by correlation; absent a sink, the prior count-and-drop
 > is unchanged. The ack reports `Ok` when a message is quarantined on a *surviving* node
 > (route-to-error / dead-lettered retry) and the real `Err` when the node *dies*
-> (`fail`) or nothing took responsibility. **Restart-with-backoff and poison-message
-> quarantine are the remaining slice.** Tracked in the
+> (`fail`) or nothing took responsibility. Part 5 (restart): a `RestartPolicy {
+> max_restarts, backoff }` on `FailurePolicy` (default `max_restarts: 0` = never
+> restart, the lean slice-1 path unchanged). A restart-enabled node runs on a
+> supervisor that **owns its mailbox** and a rebuild recipe and catches `handle` panics
+> with `catch_unwind` — discarding and rebuilding the actor on the *same* mailbox, so
+> the queue survives and routing is uninterrupted. A `fail` stop is never restarted; a
+> budget-exhausted node dies (deregister + `Health::died`) and drains its backlog to the
+> dead-letter sink (reason `NodeDied`). `Engine::restart_node(id, force)` revives a
+> permanently-dead node (the engine retains its router-restore bits + control handle, so
+> the parked supervisor's recipe is reused) or force-rebuilds a live one, resetting the
+> budget. **Poison-message quarantine (the per-delivery attempt counter + `poison_after`)
+> is the remaining slice.** Tracked in the
 > [roadmap](../reference/roadmap.md#features) Features table.
 
 ## Concept
@@ -332,3 +342,16 @@ counter here covers the *internal-routing* retries the feeder can't see.
   the sink. That is a contract change tracked as a
   [`fuchsia-engine` gap](../reference/roadmap.md#gaps), to land on its own (it pairs naturally
   with the supervisor rework).
+- **`restart_node` on a `fail`-stopped node.** A `fail` stop exits the supervisor (it's a
+  deliberate, permanent stop), but the engine still holds that node's restart handle until
+  its graph is removed — so `restart_node` reports it as live (`AlreadyRunning`, or a `force`
+  that silently no-ops on the gone supervisor) rather than reviving it. There is **no task
+  leak** (the supervisor exited; only the small handle lingers, cleared on `remove_graph`); the
+  wart is the misleading `restart_node` result. A clean fix needs the runtime to distinguish a
+  *fail-death* (drop the handle, not revivable) from a *budget-death* (keep it, parked +
+  revivable) — a small follow-up, tracked as a
+  [`fuchsia-engine` gap](../reference/roadmap.md#gaps).
+- **`restart_node` vs. a node mid-death.** `is_dead` flips true only after the node
+  deregisters, so a `restart_node` landing in that brief window sees the node as still-live and
+  returns `AlreadyRunning` (retryable). Setting the flag earlier would race the router-restore
+  against the deregister — worse — so the transient is accepted rather than fixed.
