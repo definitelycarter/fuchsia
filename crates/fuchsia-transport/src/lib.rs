@@ -11,9 +11,11 @@
 //! concern, not the runner's.
 
 mod correlation;
+mod dead_letter;
 mod delivery;
 mod mailbox;
 
 pub use correlation::CorrelationId;
+pub use dead_letter::{DeadLetter, DeadLetterReason, DeadLettered};
 pub use delivery::{Ack, Delivery, Health, Outcome};
 pub use mailbox::{MailboxRx, MailboxTx, Offer, WeakMailboxTx, mailbox};

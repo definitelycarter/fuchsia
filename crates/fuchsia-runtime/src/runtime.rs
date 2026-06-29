@@ -6,7 +6,8 @@ use fuchsia_actor::{
   ERROR_PORT, Emit, FailurePolicy, Message, MessageValue, OnError, OutputPorts,
 };
 use fuchsia_transport::{
-  Ack, CorrelationId, Delivery, Health, MailboxRx, MailboxTx, Outcome, mailbox,
+  Ack, CorrelationId, DeadLetter, DeadLetterReason, DeadLettered, Delivery, Health, MailboxRx,
+  MailboxTx, Outcome, mailbox,
 };
 
 use crate::error::RuntimeError;
@@ -124,6 +125,13 @@ impl Runtime {
     // if the host granted none), exactly the threading slice 2 used for the
     // `FailurePolicy`.
     let emit = caps.emit();
+    // The node's optional **dead-letter** sink, pulled from the same capability
+    // bag. Unlike `emit`/`schedule` this is a *domain* capability the **product**
+    // inserts under its own trait — `caps.insert::<dyn DeadLetter>(arc)` — so
+    // most nodes have none (`None`), in which case the run loop keeps slice 2's
+    // count-and-drop on `Health`. A refcount bump of the `Arc<dyn DeadLetter>`
+    // when present, mirroring how `emit` is threaded for `RouteToError`.
+    let dead_letter = caps.get::<dyn DeadLetter>();
     let ctx = Self::context(&actor_id);
 
     Ok(Spawning {
@@ -141,6 +149,7 @@ impl Runtime {
       // own copy because it outlives this `&config` borrow.
       failure: config.failure.clone(),
       emit,
+      dead_letter,
     })
   }
 
@@ -166,6 +175,7 @@ impl Runtime {
       output_ports,
       failure,
       emit,
+      dead_letter,
     } = spawning;
 
     let mut registry = self.registry.lock().map_err(|_| RuntimeError::Lock)?;
@@ -194,7 +204,19 @@ impl Runtime {
     // death, while a clean stop does neither. This is also the seam the future
     // restart slice hooks into — the supervisor is the natural owner of the
     // handle and the rebuild recipe.
-    let actor_task = tokio::spawn(run_actor(actor, ctx, rx, failure, emit));
+    // The run loop needs its own owned `ActorId` to stamp dead letters with the
+    // failing node (the supervisor keeps the other for deregistration). A real
+    // `String`-backed clone, but `commit` is a cold per-spawn path — the same
+    // place `ActorHandle::new` and the supervisor already each take an owned id.
+    let actor_task = tokio::spawn(run_actor(
+      actor,
+      ctx,
+      rx,
+      failure,
+      emit,
+      dead_letter,
+      actor_id.clone(),
+    ));
     tokio::spawn(supervise(
       actor_task,
       actor_id,
@@ -317,6 +339,13 @@ pub struct Spawning {
   /// [`OnError::RouteToError`] — the runtime emits on the node's behalf, so this
   /// is the *runtime's* copy of the same sink the actor was granted.
   emit: Arc<dyn Emit>,
+  /// The node's optional **dead-letter** sink, pulled from its capability bag at
+  /// [`Runtime::prepare`]. A *domain* capability the product inserts (not one of
+  /// fuchsia's universal `emit`/`schedule`), so it's `None` unless granted. When
+  /// present, the run loop hands it the message that exhausts a `retry` budget
+  /// or triggers a `fail` stop, instead of dropping + counting it. `None` keeps
+  /// slice 2's count-and-drop behavior unchanged.
+  dead_letter: Option<Arc<dyn DeadLetter>>,
 }
 
 impl Spawning {
@@ -332,13 +361,39 @@ impl Spawning {
   }
 }
 
+/// Where a failed delivery goes — the runtime-side destinations
+/// [`handle_with_policy`] routes to, for *this* node, bundled so the policy
+/// applier takes one borrow instead of three. Built once per `run_actor`, used
+/// only on the cold error paths:
+///
+/// - `emit` — the node's `"error"` port sink for [`OnError::RouteToError`].
+/// - `dead_letter` — the optional product-provided sink for an exhausted `retry`
+///   / a `fail` stop; `None` falls back to count-and-drop.
+/// - `node` — the failing node's id, stamped onto a [`DeadLettered`].
+struct FailureSinks<'a> {
+  emit: &'a dyn Emit,
+  dead_letter: Option<&'a dyn DeadLetter>,
+  node: &'a ActorId,
+}
+
 async fn run_actor(
   mut actor: Box<dyn Actor>,
   ctx: ActorContext,
   mut rx: MailboxRx,
   failure: FailurePolicy,
   emit: Arc<dyn Emit>,
+  dead_letter: Option<Arc<dyn DeadLetter>>,
+  node: ActorId,
 ) {
+  // Borrow the failure destinations once for the whole loop — the `Arc`s /
+  // `Option` live for `run_actor`, so this is a single bundle of references the
+  // policy applier reuses per delivery (no per-message rebuild).
+  let sinks = FailureSinks {
+    emit: emit.as_ref(),
+    dead_letter: dead_letter.as_deref(),
+    node: &node,
+  };
+
   while let Some(delivery) = rx.recv().await {
     let Delivery {
       msg,
@@ -349,8 +404,8 @@ async fn run_actor(
 
     // Apply the node's failure policy around `handle`. Returns the final outcome
     // (after any retries) and whether the policy says to **stop** the node. The
-    // `emit` sink lets `RouteToError` emit the error envelope on the node's
-    // behalf.
+    // `sinks` carry where a failure goes: the `"error"` port (RouteToError), and
+    // the optional dead-letter sink for an exhausted `retry` / a `fail` stop.
     let (outcome, stop) = handle_with_policy(
       &mut actor,
       &ctx,
@@ -358,7 +413,7 @@ async fn run_actor(
       msg,
       &parent,
       correlation,
-      emit.as_ref(),
+      &sinks,
     )
     .await;
     ack.report(outcome);
@@ -385,12 +440,26 @@ async fn run_actor(
 /// reflects the final state), and whether the node should stop (`OnError::Fail`
 /// on an error).
 ///
-/// Performance: the common path — `Continue` / `Fail`, or a `Retry` whose first
-/// attempt succeeds — moves `msg` straight into `handle` with **no clone and no
-/// extra allocation**, exactly as before. A `Message` is cloned *only* on the
-/// retry path, *only* between attempts when one errored and another will follow
-/// (cloning a `Message` can deep-copy its JSON/bytes, so it is kept off every
-/// other path).
+/// Performance: the common path — `Continue`, a `Fail`/`Retry` that succeeds, or
+/// any policy with **no dead-letter sink** — moves `msg` straight into `handle`
+/// with **no clone and no extra allocation**, exactly as before. A `Message` is
+/// cloned (it can deep-copy JSON/bytes, so the clone is kept off every other
+/// path) *only*: (1) on the retry path between attempts when one errored and
+/// another will follow, and (2) to *preserve* the original for a dead-letter
+/// sink that is present — on a `fail` stop, or an exhausted `retry` — so the
+/// sink receives the message `handle` is about to consume. Both are cold failure
+/// paths; the no-sink fallback pays neither.
+///
+/// Ack semantics — one rule across the arms: the returned `Outcome` is **`Ok`**
+/// when the runtime *quarantined* the message on a **surviving** node (diverted
+/// it to the error port under `RouteToError`, or dead-lettered an exhausted
+/// `retry`), since it is no longer a retriable failure and an at-least-once
+/// durable caller must not retry and double-handle it. It is the real **`Err`**
+/// when the node **dies** (`Fail`) or nothing took responsibility (no sink →
+/// count-and-drop). A `fail` that dies on a message still dead-letters it to
+/// preserve it, but reports `Err` — it must not tell a durable caller "success"
+/// when the node just crashed on their input. Survive-and-quarantine → `Ok`;
+/// die-or-drop → the real outcome.
 async fn handle_with_policy(
   actor: &mut Box<dyn Actor>,
   ctx: &ActorContext,
@@ -398,8 +467,13 @@ async fn handle_with_policy(
   msg: Message,
   parent: &tracing::Span,
   correlation: CorrelationId,
-  emit: &dyn Emit,
+  sinks: &FailureSinks<'_>,
 ) -> (Outcome, bool) {
+  let FailureSinks {
+    emit,
+    dead_letter,
+    node,
+  } = *sinks;
   match on_error {
     // Today's behavior: one attempt, fold the outcome into `Health` + drop on
     // error, keep going. `correlation` is *moved* in (no clone), no stop.
@@ -409,9 +483,36 @@ async fn handle_with_policy(
     }
     // Fail-fast: one attempt; on error, signal the caller to stop the node
     // (death path). The errored outcome is still reported on the ack.
+    //
+    // Dead-letter is **additive** on `fail`: when a sink is present, the
+    // triggering message is preserved (reason `Failed`) *before* the node stops,
+    // but the ack still reports the original `Err` and the supervisor still
+    // records `died` — slice 1/2's death/ack/stop behavior is unchanged. The
+    // node is dying regardless, so the dead-letter preserves the message rather
+    // than replacing the failure signal (the durable feeder remains free to do
+    // its own thing; re-delivery just hits a now-deregistered node).
     OnError::Fail => {
-      let outcome = handle_once(actor, ctx, msg, parent, correlation).await;
+      // The message is consumed by `handle_once`; snapshot it *only* when a sink
+      // is present (so the cold fail path can dead-letter the original), keeping
+      // the clone off the no-sink path entirely. A `Message` clone can deep-copy
+      // its JSON/bytes, so it is paid only here, on a node that is about to die.
+      let preserved = dead_letter.map(|_| msg.clone());
+      let outcome = handle_once(actor, ctx, msg, parent, correlation.clone()).await;
       let stop = outcome.is_err();
+      if stop && let (Some(sink), Some(preserved)) = (dead_letter, preserved) {
+        let error = match &outcome {
+          Err(err) => err.to_string(),
+          Ok(()) => String::new(),
+        };
+        sink.dead_letter(DeadLettered::new(
+          preserved,
+          correlation,
+          // Cold fail path on a dying node — an owned id for the sink. A real
+          // `String` clone, but paid once, only when a node fails with a sink.
+          node.clone(),
+          DeadLetterReason::Failed { error },
+        ));
+      }
       (outcome, stop)
     }
     // Retry the *same* message up to `max` times after the first failure, with
@@ -446,18 +547,41 @@ async fn handle_with_policy(
         }
       }
 
-      // Final attempt — move `msg` + `correlation` in, no clone. On exhausted
-      // retry we fall back to `Continue` semantics: report the (possibly
-      // errored) outcome so `Health` counts it and the message is dropped, and
-      // keep the node alive for the next message.
-      //
-      // TODO(node-failure-handling part 4): an exhausted-retry message should go
-      // to the **dead-letter sink** (a host-provided capability in the bag),
-      // keyed by correlation id, rather than being dropped+counted here. Routing
-      // it out the reserved `"error"` port (part 3) is a separate earlier slice.
-      // Until those land, this count-and-drop is the honest fallback.
-      let outcome = handle_once(actor, ctx, msg, parent, correlation).await;
-      (outcome, false)
+      // Final, `(max + 1)`-th attempt. Total attempts on exhaustion = `max + 1`
+      // (one initial + `max` retries).
+      let attempts = *max + 1;
+      // Snapshot the message *only* when a dead-letter sink is present, so an
+      // exhausted retry can preserve the original; with no sink this is `None`
+      // and the message is moved straight into the final `handle_once` — the
+      // count-and-drop path keeps slice 2's behavior with zero extra clone.
+      // A `Message` clone can deep-copy its JSON/bytes, so it is paid only on the
+      // sink-present exhausted-retry path, never on success or with no sink.
+      let preserved = dead_letter.map(|_| msg.clone());
+      let outcome = handle_once(actor, ctx, msg, parent, correlation.clone()).await;
+      match (&outcome, dead_letter, preserved) {
+        // Exhausted retry *and* a sink is present: hand it the message (reason
+        // `RetryExhausted`) instead of dropping it. The runtime has taken
+        // responsibility, so this is **not** a retriable failure — report `Ok`,
+        // so an at-least-once `Ack::Complete` durable caller doesn't retry and
+        // produce a *duplicate* dead-letter. The node stays alive.
+        (Err(err), Some(sink), Some(preserved)) => {
+          let error = err.to_string();
+          sink.dead_letter(DeadLettered::new(
+            preserved,
+            correlation,
+            // Cold exhausted-retry path — an owned id for the sink. A real
+            // `String` clone, paid once, only when a retry exhausts with a sink.
+            node.clone(),
+            DeadLetterReason::RetryExhausted { attempts, error },
+          ));
+          (Ok(()), false)
+        }
+        // No sink (or the final attempt unexpectedly succeeded): slice 2's
+        // fallback — report the (possibly errored) outcome so `Health` counts it
+        // and the message is dropped, keeping the node alive for the next
+        // message. The durable caller remains the retry-of-last-resort.
+        _ => (outcome, false),
+      }
     }
     // Divert a handled `Err` to the node's reserved `"error"` output port, then
     // keep going (no stop). One attempt; on success this is identical to
@@ -1476,6 +1600,301 @@ mod tests {
       elapsed >= Duration::from_millis(50),
       "expected backoff delay, took {elapsed:?}"
     );
+  }
+
+  // ---- dead-letter sink (part 4) ----------------------------------------------
+
+  use fuchsia_transport::{DeadLetter, DeadLetterReason, DeadLettered};
+
+  /// A recording `DeadLetter` sink — the shape a product's real impl takes, minus
+  /// the store. Records every dead letter and notifies, so a test can await the
+  /// dead-letter signal rather than sleep.
+  struct RecorderDeadLetter {
+    letters: Mutex<Vec<DeadLettered>>,
+    notify: Notify,
+  }
+
+  impl RecorderDeadLetter {
+    fn new() -> Arc<Self> {
+      Arc::new(Self {
+        letters: Mutex::new(Vec::new()),
+        notify: Notify::new(),
+      })
+    }
+  }
+
+  impl DeadLetter for RecorderDeadLetter {
+    fn dead_letter(&self, letter: DeadLettered) {
+      self.letters.lock().unwrap().push(letter);
+      self.notify.notify_one();
+    }
+  }
+
+  /// Spawn a `FailActor` under `policy` with `sink` inserted as its `DeadLetter`
+  /// capability — a *domain* capability the product inserts under its own trait,
+  /// exactly as a real product would (`caps.insert::<dyn DeadLetter>(arc)`).
+  async fn spawn_failing_with_dead_letter(
+    rt: &mut Runtime,
+    id: &str,
+    fail_first: u32,
+    policy: FailurePolicy,
+    sink: Arc<RecorderDeadLetter>,
+  ) -> (Arc<Health>, Arc<FailProbe>) {
+    let probe = FailProbe::new(fail_first);
+    rt.register(
+      "fail",
+      FailCreator {
+        probe: probe.clone(),
+      },
+    );
+    let config = ActorConfig {
+      failure: policy,
+      ..Default::default()
+    };
+    let mut caps = ActorCapabilities::new();
+    // Insert under the trait-object type, the way a product grants a domain
+    // capability — there is no `with_dead_letter` helper, just the generic seam.
+    caps.insert::<dyn DeadLetter>(sink);
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(actor_id(id), "fail", &config, caps)
+      .await
+      .unwrap();
+    drop(tx);
+    (health, probe)
+  }
+
+  #[tokio::test]
+  async fn exhausted_retry_dead_letters_and_acks_ok() {
+    // Always errors; max=2 retries → 3 attempts, all fail. With a sink present,
+    // the exhausted retry hands the original message to the dead-letter sink
+    // (reason RetryExhausted, attempts=3) instead of dropping+counting it, the
+    // ack reports Ok (so Health counts it handled, not errored), and the node
+    // survives for the next message.
+    let mut rt = Runtime::new();
+    let sink = RecorderDeadLetter::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (health, probe) = spawn_failing_with_dead_letter(
+      &mut rt,
+      "a",
+      u32::MAX,
+      FailurePolicy::retry(2, backoff),
+      sink.clone(),
+    )
+    .await;
+
+    rt.deliver(
+      &actor_id("a"),
+      Message::json("reading", serde_json::json!({ "v": 1 })),
+    )
+    .await
+    .unwrap();
+    sink.notify.notified().await;
+
+    // Exactly one dead letter, carrying the original message + node + reason.
+    {
+      let letters = sink.letters.lock().unwrap();
+      assert_eq!(letters.len(), 1);
+      let letter = &letters[0];
+      assert_eq!(letter.msg.type_, "reading");
+      assert_eq!(
+        letter.msg.value,
+        MessageValue::Json(serde_json::json!({ "v": 1 }))
+      );
+      assert_eq!(letter.node, actor_id("a"));
+      assert_eq!(
+        letter.reason,
+        DeadLetterReason::RetryExhausted {
+          attempts: 3, // 1 initial + 2 retries
+          error: "handle failed: intentional".to_owned(),
+        }
+      );
+    }
+
+    // 1 initial + 2 retries = 3 attempts, all errored.
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 3);
+    // Dead-lettered, not a retriable failure: the ack reports Ok, so Health
+    // counts it handled (not errored) and the node is not dead.
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.errored(), 0);
+    assert_eq!(health.died(), 0);
+
+    // The node survives — a second message is still handled.
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+    rt.deliver(&actor_id("a"), Message::empty("again"))
+      .await
+      .unwrap();
+    while probe.calls.load(Ordering::SeqCst) < 6 {
+      probe.notify.notified().await;
+    }
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 6);
+  }
+
+  #[tokio::test]
+  async fn exhausted_retry_no_sink_counts_and_drops() {
+    // Regression guard: with *no* dead-letter sink, an exhausted retry keeps
+    // slice-2 behavior exactly — count + drop the final errored outcome on
+    // Health, node stays alive. (The full assertion is in
+    // `retry_exhausted_drops_counts_and_stays_alive`; this asserts the errored
+    // ack specifically, the thing the sink path flips to Ok.)
+    let mut rt = Runtime::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (health, _probe) =
+      spawn_failing(&mut rt, "a", u32::MAX, FailurePolicy::retry(2, backoff)).await;
+
+    rt.deliver(&actor_id("a"), Message::empty("go"))
+      .await
+      .unwrap();
+    // Wait for the final (errored) outcome to land on Health.
+    while health.handled() == 0 {
+      tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // No sink → the exhausted retry reports the final Err: errored, not handled-Ok.
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.errored(), 1);
+    assert_eq!(health.died(), 0);
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn exhausted_retry_no_sink_durable_ack_reports_err() {
+    // Engine-free durable-ack regression: with no sink, an exhausted retry must
+    // still report the final Err through an `Ack::Complete`, so a durable caller
+    // (`push_durable`) sees the failure and remains the retry-of-last-resort.
+    let mut rt = Runtime::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (_health, _probe) =
+      spawn_failing(&mut rt, "a", u32::MAX, FailurePolicy::retry(2, backoff)).await;
+
+    // Send a delivery carrying a Complete ack (the durable path) and assert the
+    // outcome that comes back is the final Err.
+    let mailbox = {
+      let registry = rt.registry.lock().unwrap();
+      registry.get(&actor_id("a")).unwrap().mailbox().clone()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let delivery = Delivery::new(Message::empty("go"), Ack::Complete(tx));
+    assert!(mailbox.send(delivery).await.is_ok());
+
+    let outcome = rx.await.unwrap();
+    assert!(outcome.is_err(), "exhausted retry with no sink reports Err");
+  }
+
+  #[tokio::test]
+  async fn exhausted_retry_with_sink_durable_ack_reports_ok() {
+    // The other half of the ack-semantics decision: *with* a sink, an exhausted
+    // retry reports Ok through the Complete ack, so an at-least-once durable
+    // caller doesn't retry and produce a duplicate dead-letter.
+    let mut rt = Runtime::new();
+    let sink = RecorderDeadLetter::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (_health, _probe) = spawn_failing_with_dead_letter(
+      &mut rt,
+      "a",
+      u32::MAX,
+      FailurePolicy::retry(2, backoff),
+      sink.clone(),
+    )
+    .await;
+
+    let mailbox = {
+      let registry = rt.registry.lock().unwrap();
+      registry.get(&actor_id("a")).unwrap().mailbox().clone()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let delivery = Delivery::new(Message::empty("go"), Ack::Complete(tx));
+    assert!(mailbox.send(delivery).await.is_ok());
+
+    let outcome = rx.await.unwrap();
+    assert!(outcome.is_ok(), "dead-lettered exhausted retry reports Ok");
+    assert_eq!(sink.letters.lock().unwrap().len(), 1);
+  }
+
+  #[tokio::test]
+  async fn fail_dead_letters_the_triggering_message_and_still_dies() {
+    // Under `fail` with a sink, the triggering message is preserved (reason
+    // Failed) before the node stops — but the death/ack behavior is unchanged
+    // from slice 1/2: teardown runs, Health records a death, the errored outcome
+    // is still reported, and the node deregisters + fires the death listener.
+    let mut rt = Runtime::new();
+    let (dead, notify) = record_deaths(&mut rt);
+    let sink = RecorderDeadLetter::new();
+    let (health, probe) =
+      spawn_failing_with_dead_letter(&mut rt, "a", u32::MAX, FailurePolicy::fail(), sink.clone())
+        .await;
+
+    rt.deliver(
+      &actor_id("a"),
+      Message::json("boom", serde_json::json!({ "x": 9 })),
+    )
+    .await
+    .unwrap();
+
+    // The death signal fires once the failing handle breaks the loop.
+    notify.notified().await;
+
+    // The sink received the triggering message (reason Failed).
+    {
+      let letters = sink.letters.lock().unwrap();
+      assert_eq!(letters.len(), 1);
+      let letter = &letters[0];
+      assert_eq!(letter.msg.type_, "boom");
+      assert_eq!(letter.node, actor_id("a"));
+      assert_eq!(
+        letter.reason,
+        DeadLetterReason::Failed {
+          error: "handle failed: intentional".to_owned(),
+        }
+      );
+    }
+
+    // Slice 1/2 behavior intact: teardown ran, one handle call, the errored
+    // outcome is still reported *and* the death is a distinct event.
+    assert!(probe.teardown_called.load(Ordering::SeqCst));
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.errored(), 1);
+    assert_eq!(health.died(), 1);
+    assert_eq!(dead.lock().unwrap().as_slice(), &[actor_id("a")]);
+
+    // The node stops resolving.
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn dead_letter_carries_the_triggering_correlation() {
+    // The dead letter must carry the *delivery's* correlation so it ties back to
+    // the originating run — keyed by correlation id, per the RFC. Drive a
+    // delivery with a known correlation and assert the dead letter inherits it.
+    let mut rt = Runtime::new();
+    let sink = RecorderDeadLetter::new();
+    let backoff = Backoff::fixed(Duration::from_millis(1));
+    let (_health, _probe) = spawn_failing_with_dead_letter(
+      &mut rt,
+      "a",
+      u32::MAX,
+      FailurePolicy::retry(1, backoff),
+      sink.clone(),
+    )
+    .await;
+
+    let known = CorrelationId::from("run-dead-letter");
+    {
+      let (mailbox, health) = {
+        let registry = rt.registry.lock().unwrap();
+        let handle = registry.get(&actor_id("a")).unwrap();
+        (handle.mailbox().clone(), handle.health().clone())
+      };
+      let delivery =
+        Delivery::with_correlation(Message::empty("boom"), Ack::Health(health), known.clone());
+      assert!(mailbox.send(delivery).await.is_ok());
+    }
+
+    sink.notify.notified().await;
+
+    let letters = sink.letters.lock().unwrap();
+    assert_eq!(letters.len(), 1);
+    assert_eq!(letters[0].correlation.as_str(), "run-dead-letter");
   }
 
   // ---- route_to_error (error output port) -------------------------------------

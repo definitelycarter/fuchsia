@@ -18,3 +18,12 @@ pub use router::RouteCounts;
 /// The run id a trigger mints for [`Engine::push`] / [`Engine::push_durable`].
 /// Re-exported so callers reach it through the engine surface they already use.
 pub use fuchsia_transport::CorrelationId;
+
+/// The dead-letter seam: a product inserts its [`DeadLetter`] implementation into
+/// a node's [`ActorCapabilities`](fuchsia_actor::ActorCapabilities) (via
+/// `caps.insert::<dyn DeadLetter>(arc)`) before passing them to
+/// [`Engine::add_node`]; the runtime hands it any message that exhausts a `retry`
+/// budget or triggers a `fail` stop ([`DeadLettered`] + [`DeadLetterReason`]).
+/// Re-exported so a product reaches the seam through the engine surface it
+/// already uses, like [`CorrelationId`].
+pub use fuchsia_transport::{DeadLetter, DeadLetterReason, DeadLettered};

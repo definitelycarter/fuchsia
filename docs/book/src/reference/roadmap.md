@@ -7,7 +7,7 @@ lands (no strikethrough).
 
 | Feature | Description | Notes |
 |---------|-------------|-------|
-| Node failure handling | Death detection (the zombie-actor fix), per-node error policy, error output port, retry, dead-letter sink. See [RFC](../rfcs/node-failure-handling.md). | `fuchsia-runtime`, `fuchsia-engine`, `fuchsia-actor` |
+| Node failure handling | **Remaining: restart-with-backoff + poison-message quarantine.** Death detection, per-node error policy (continue/fail/retry), error output port, and the dead-letter sink have shipped (parts 1–4). See [RFC](../rfcs/node-failure-handling.md). | `fuchsia-runtime`, `fuchsia-engine`, `fuchsia-actor` |
 | Graceful shutdown | `engine.shutdown(deadline)` — seal entrypoints, drain source → sink, run each `teardown`, deadline-bounded; requires a DAG. See [RFC](../rfcs/graceful-shutdown.md). | `fuchsia-engine`, `fuchsia-runtime` |
 | Runs & result correlation | Persistent graph; runs are correlation-tagged fire-and-forget messages; optional async result via a respond node + result sink. See [RFC](../rfcs/runs-and-results.md). | `fuchsia-engine`, host |
 | JavaScript actor (QuickJS) | Dynamic JS scripts in an embedded QuickJS interpreter (`rquickjs`, no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm is the hardened alternative. See [RFC](../rfcs/javascript-actor.md). | `fuchsia-actor-js` (new), `fuchsia-actor` |
@@ -31,6 +31,7 @@ lands (no strikethrough).
 |-----|----------|
 | `add_edge` enforces acyclicity with a full reachability walk per edge (O(V+E)) — fine at workflow scale. If graphs ever grow large, switch to incremental topological maintenance (keep a topo order, check on insert). See [DAG enforcement](../rfcs/dag-enforcement.md). | Low |
 | Routing sheds on a full downstream mailbox (at-most-once) with no per-target backpressure option | Low (intentional for the conditioning path; revisit if a lossless route is needed) |
+| `Emit::emit_to` returns `()`, so a caller can't tell delivered from routed-nowhere. Returning a routing outcome (delivered / shed / no-route) would let the runtime fall a `route_to_error` emit through to the dead-letter sink when the `"error"` port is unwired — the precedence [node failure handling](../rfcs/node-failure-handling.md) defines but can't yet realize. | Low |
 
 ### `fuchsia-actor-wasm`
 

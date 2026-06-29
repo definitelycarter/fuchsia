@@ -1,18 +1,21 @@
 # RFC: Node Failure Handling
 
-> **Status: in progress — parts 1–3 (death detection + error policy + error port) shipped.** The
+> **Status: in progress — parts 1–4 shipped; restart + poison pending.** The
 > three open questions are resolved (see [Decisions](#decisions)). Part 1: the runtime
 > keeps the actor task's `JoinHandle`, a per-node supervisor deregisters a dead node so
 > it stops resolving, records a distinct `Health::died` count, and surfaces a death
 > callback the engine reacts to. Part 2: a typed, host-understood `FailurePolicy` on
 > `ActorConfig` (continue / fail / retry-with-backoff), applied by the run loop around
-> `handle` — `fail` reuses the part-1 death path; an exhausted `retry` currently falls
-> back to count-and-drop until the dead-letter sink (part 4) lands. Part 3: an
-> `OnError::RouteToError` arm — on a handled `Err` the run loop emits an error envelope
-> (error string + node id + original type/payload) on the node's reserved `"error"`
-> port, stamped with the triggering delivery's correlation, then continues; the diverted
-> error reports `Ok` on the ack (not retriable). Part 4 (dead-letter) and restart/poison
-> are pending. Tracked in the [roadmap](../reference/roadmap.md#features) Features table.
+> `handle`. Part 3: an `OnError::RouteToError` arm emits an error envelope (error string
+> + node id + original type/payload) on the node's reserved `"error"` port, stamped with
+> the triggering delivery's correlation. Part 4: a host-provided `DeadLetter` capability
+> (fuchsia owns the seam, the product owns storage) receives a message that exhausts
+> `retry` or hits `fail`, keyed by correlation; absent a sink, the prior count-and-drop
+> is unchanged. The ack reports `Ok` when a message is quarantined on a *surviving* node
+> (route-to-error / dead-lettered retry) and the real `Err` when the node *dies*
+> (`fail`) or nothing took responsibility. **Restart-with-backoff and poison-message
+> quarantine are the remaining slice.** Tracked in the
+> [roadmap](../reference/roadmap.md#features) Features table.
 
 ## Concept
 
@@ -320,3 +323,12 @@ counter here covers the *internal-routing* retries the feeder can't see.
   (the `type`/`node`/`error` identify the failed message), but not the bytes. The
   `byte_len` name leaves `bytes` free for a base64 of the content, to be added for
   binary logging / UI inspection when a consumer needs to replay or display it.
+- **`route_to_error` → dead-letter fallback.** The precedence this RFC defines is
+  "error port if wired, else dead-letter sink, else observable drop." Today `route_to_error`
+  on an **unwired** `"error"` port degrades to `no_route` (observable) and does *not* fall
+  through to the dead-letter sink — the runtime fires `Emit::emit_to` and gets `()` back, so
+  it cannot tell "delivered" from "routed nowhere." Closing this needs `Emit::emit_to` to
+  **return a routing outcome** (delivered / shed / no-route) so the run loop can fall back to
+  the sink. That is a contract change tracked as a
+  [`fuchsia-engine` gap](../reference/roadmap.md#gaps), to land on its own (it pairs naturally
+  with the supervisor rework).
