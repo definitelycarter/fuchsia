@@ -60,6 +60,17 @@ impl CorrelationId {
     CURRENT.scope(self, fut)
   }
 
+  /// Run the **synchronous** closure `f` with `self` as the current correlation
+  /// — the non-async analog of [`scope`](Self::scope). The runtime uses this to
+  /// stamp a *synchronous* emit (an `Emit::emit_to`, whose
+  /// [`Delivery::new`](crate::Delivery::new) reads the current correlation) with
+  /// a specific run id when there is no live `handle` scope to inherit from —
+  /// e.g. emitting an error envelope *after* `handle` has already returned, so
+  /// the right run's error branch fires.
+  pub fn sync_scope<R>(self, f: impl FnOnce() -> R) -> R {
+    CURRENT.sync_scope(self, f)
+  }
+
   /// The correlation in scope on the current task, if one is set.
   // Clippy would prefer the `Result::ok` shorthand, but the repo bans that in
   // production (it reads as silently discarding an error). The only error here
@@ -154,6 +165,15 @@ mod tests {
     let seen = id.clone().scope(async { CorrelationId::current() }).await;
     assert_eq!(seen, Some(id));
     // Leaves no current correlation once the scope ends.
+    assert!(CorrelationId::current().is_none());
+  }
+
+  #[tokio::test]
+  async fn sync_scope_sets_the_current_correlation() {
+    let id = CorrelationId::from("run-11");
+    let seen = id.clone().sync_scope(CorrelationId::current);
+    assert_eq!(seen, Some(id));
+    // Leaves no current correlation once the synchronous scope ends.
     assert!(CorrelationId::current().is_none());
   }
 }

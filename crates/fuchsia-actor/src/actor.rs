@@ -49,6 +49,14 @@ impl Message {
 /// and an edge wired without an explicit source port leaves from here.
 pub const DEFAULT_PORT: &str = "out";
 
+/// The reserved error output port. A node under `route_to_error` emits its error
+/// envelope here; the engine always accepts an edge from it (even on a `Fixed`
+/// node that does not list it) and pre-creates its route counter, so an unwired
+/// `"error"` emit is counted as `no_route` rather than silently dropped. The
+/// single source of truth for the reserved name — both the engine and the
+/// runtime use this constant.
+pub const ERROR_PORT: &str = "error";
+
 /// Sink for the messages an actor emits. The host supplies the implementation
 /// when it builds the [`ActorContext`], so the actor stays neighbor-ignorant:
 /// it emits to a *named output port*, and the host decides which successors

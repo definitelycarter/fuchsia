@@ -6,7 +6,8 @@ mod from_fn;
 mod id;
 
 pub use actor::{
-  Actor, ActorCapabilities, ActorContext, DEFAULT_PORT, Emit, Message, MessageValue, Schedule,
+  Actor, ActorCapabilities, ActorContext, DEFAULT_PORT, ERROR_PORT, Emit, Message, MessageValue,
+  Schedule,
 };
 pub use async_trait::async_trait;
 pub use error::ActorError;

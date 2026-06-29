@@ -3,9 +3,11 @@ use std::sync::{Arc, Mutex, Weak};
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorFactory, ActorId,
-  FailurePolicy, Message, OnError, OutputPorts,
+  ERROR_PORT, Emit, FailurePolicy, Message, MessageValue, OnError, OutputPorts,
 };
-use fuchsia_transport::{Ack, Delivery, Health, MailboxRx, MailboxTx, Outcome, mailbox};
+use fuchsia_transport::{
+  Ack, CorrelationId, Delivery, Health, MailboxRx, MailboxTx, Outcome, mailbox,
+};
 
 use crate::error::RuntimeError;
 use crate::registry::{ActorHandle, ActorRegistry};
@@ -114,6 +116,14 @@ impl Runtime {
     // engine can validate edges against them. Same name-keyed lookup `create`
     // just did, so the two cannot drift.
     let output_ports = self.factory.output_ports(type_name, config)?;
+    // The node's `emit` sink, pulled from the same capability bag the actor was
+    // built from (`caps` is only *borrowed* by `create`, so it's still owned
+    // here). The run loop holds its own handle so it can emit the error envelope
+    // on the node's behalf under `OnError::RouteToError` — the actor never sees
+    // this. A refcount bump of the `Arc<dyn Emit>` (falls back to a no-op sink
+    // if the host granted none), exactly the threading slice 2 used for the
+    // `FailurePolicy`.
+    let emit = caps.emit();
     let ctx = Self::context(&actor_id);
 
     Ok(Spawning {
@@ -130,6 +140,7 @@ impl Runtime {
       // on the cold per-spawn path (no per-message cost); the run loop owns its
       // own copy because it outlives this `&config` borrow.
       failure: config.failure.clone(),
+      emit,
     })
   }
 
@@ -154,6 +165,7 @@ impl Runtime {
       health,
       output_ports,
       failure,
+      emit,
     } = spawning;
 
     let mut registry = self.registry.lock().map_err(|_| RuntimeError::Lock)?;
@@ -182,7 +194,7 @@ impl Runtime {
     // death, while a clean stop does neither. This is also the seam the future
     // restart slice hooks into — the supervisor is the natural owner of the
     // handle and the rebuild recipe.
-    let actor_task = tokio::spawn(run_actor(actor, ctx, rx, failure));
+    let actor_task = tokio::spawn(run_actor(actor, ctx, rx, failure, emit));
     tokio::spawn(supervise(
       actor_task,
       actor_id,
@@ -294,10 +306,17 @@ pub struct Spawning {
   rx: MailboxRx,
   health: Arc<Health>,
   output_ports: OutputPorts,
-  /// The node's host-understood failure policy (continue / fail / retry), read
-  /// off its config at [`Runtime::prepare`] and applied by [`run_actor`] around
-  /// each `handle`. Unset = [`FailurePolicy::default`] = today's count + drop.
+  /// The node's host-understood failure policy (continue / fail / retry /
+  /// route-to-error), read off its config at [`Runtime::prepare`] and applied by
+  /// [`run_actor`] around each `handle`. Unset = [`FailurePolicy::default`] =
+  /// today's count + drop.
   failure: FailurePolicy,
+  /// The node's `emit` sink, pulled from its capability bag at
+  /// [`Runtime::prepare`]. The run loop holds it so it can emit an error
+  /// envelope on the node's reserved `"error"` port under
+  /// [`OnError::RouteToError`] — the runtime emits on the node's behalf, so this
+  /// is the *runtime's* copy of the same sink the actor was granted.
+  emit: Arc<dyn Emit>,
 }
 
 impl Spawning {
@@ -318,6 +337,7 @@ async fn run_actor(
   ctx: ActorContext,
   mut rx: MailboxRx,
   failure: FailurePolicy,
+  emit: Arc<dyn Emit>,
 ) {
   while let Some(delivery) = rx.recv().await {
     let Delivery {
@@ -328,7 +348,9 @@ async fn run_actor(
     } = delivery;
 
     // Apply the node's failure policy around `handle`. Returns the final outcome
-    // (after any retries) and whether the policy says to **stop** the node.
+    // (after any retries) and whether the policy says to **stop** the node. The
+    // `emit` sink lets `RouteToError` emit the error envelope on the node's
+    // behalf.
     let (outcome, stop) = handle_with_policy(
       &mut actor,
       &ctx,
@@ -336,6 +358,7 @@ async fn run_actor(
       msg,
       &parent,
       correlation,
+      emit.as_ref(),
     )
     .await;
     ack.report(outcome);
@@ -374,7 +397,8 @@ async fn handle_with_policy(
   on_error: &OnError,
   msg: Message,
   parent: &tracing::Span,
-  correlation: fuchsia_transport::CorrelationId,
+  correlation: CorrelationId,
+  emit: &dyn Emit,
 ) -> (Outcome, bool) {
   match on_error {
     // Today's behavior: one attempt, fold the outcome into `Health` + drop on
@@ -435,16 +459,86 @@ async fn handle_with_policy(
       let outcome = handle_once(actor, ctx, msg, parent, correlation).await;
       (outcome, false)
     }
-    // `OnError` is `#[non_exhaustive]`: a future variant (e.g. the RFC's
-    // `RouteToError`, part 3) is not handled by this slice. Until its slice
-    // lands, fall back to `Continue` semantics — one attempt, count + drop on
-    // error, node stays alive — rather than failing to compile or stopping the
-    // node. The future slice replaces this with the real handling.
+    // Divert a handled `Err` to the node's reserved `"error"` output port, then
+    // keep going (no stop). One attempt; on success this is identical to
+    // `Continue`.
+    //
+    // On error the runtime builds an **error envelope** — the error string, the
+    // node id, and the *original* message's type + payload — and emits it on
+    // `"error"` on the node's behalf. The envelope is stamped with **this
+    // delivery's** correlation (`sync_scope`), so the right run's error branch
+    // fires even though `handle`'s own scope has already ended. If nothing is
+    // wired to `"error"`, the engine counts the emit as `no_route` on
+    // `(node, "error")` — the honest fallback until the dead-letter sink (part 4).
+    //
+    // Ack semantics: the diverted error is reported as **`Ok(())`**, not the
+    // original `Err`. The failure has been routed to the error branch, so it is
+    // *not* a retriable failure — reporting `Err` would make an at-least-once
+    // `Ack::Complete` durable caller (`push_durable`) retry and **double-process**
+    // (the error branch would fire a second time). The node continues either way.
+    OnError::RouteToError => {
+      // Snapshot the original type + payload *before* `handle` consumes `msg`;
+      // needed only if `handle` errors. This clone is on the cold error-handling
+      // path's setup but unavoidable — `handle_once` moves `msg` — so it is kept
+      // to the `RouteToError` arm only, never the success/other policies. The
+      // payload clone (a JSON/bytes deep-copy) is only *used* on the error path
+      // (it builds the envelope); on success the snapshot is simply dropped.
+      let type_ = msg.type_.clone();
+      let payload = msg.value.clone();
+      // `correlation` is moved into `handle_once`; keep a refcount-bumped copy to
+      // stamp the envelope emit after the handle scope ends.
+      let outcome = handle_once(actor, ctx, msg, parent, correlation.clone()).await;
+      if let Err(err) = &outcome {
+        let envelope = error_envelope(&err.to_string(), &ctx.node_id, &type_, payload);
+        // Emit *within this delivery's correlation scope* so `RoutedEmit`'s
+        // `Delivery::new` stamps the error branch with the triggering run's id —
+        // `handle`'s own scope is already gone by here. Synchronous, since
+        // `Emit::emit_to` is a sync call.
+        correlation.sync_scope(|| emit.emit_to(ERROR_PORT, envelope));
+      }
+      // Diverted, not retriable: report `Ok` (see the ack-semantics note above).
+      (Ok(()), false)
+    }
+    // `OnError` is `#[non_exhaustive]`: a *future* variant (e.g. the dead-letter
+    // terminal action, part 4) is not handled here. Until its slice lands, fall
+    // back to `Continue` semantics — one attempt, count + drop on error, node
+    // stays alive — rather than failing to compile or stopping the node.
     _ => {
       let outcome = handle_once(actor, ctx, msg, parent, correlation).await;
       (outcome, false)
     }
   }
+}
+
+/// Build the error envelope emitted on the reserved `"error"` port under
+/// [`OnError::RouteToError`]: a JSON message carrying the error string, the
+/// originating node id, and the *original* message's type + payload, so the
+/// error sub-graph has everything it needs to react.
+///
+/// The envelope's own `type_` is `"error"`. The original payload maps by
+/// [`MessageValue`] variant: `Json(v)` embeds `v` verbatim; `Empty` → JSON
+/// `null`; `Binary` → a `{ "byte_len": <len> }` marker rather than the bytes
+/// themselves — the envelope is a JSON message, so embedding raw bytes would
+/// force an encoding choice (base64) and a new dependency. The marker keeps the
+/// envelope honest (the error branch sees that an N-byte binary payload
+/// triggered the failure); naming the field `byte_len` (not `bytes`) leaves
+/// `bytes` free to carry a base64 of the content later — binary logging / UI
+/// inspection — without a breaking rename.
+fn error_envelope(error: &str, node: &str, type_: &str, payload: MessageValue) -> Message {
+  let payload_json = match payload {
+    MessageValue::Json(v) => v,
+    MessageValue::Empty => serde_json::Value::Null,
+    MessageValue::Binary(bytes) => serde_json::json!({ "byte_len": bytes.len() }),
+  };
+  Message::json(
+    "error",
+    serde_json::json!({
+      "error": error,
+      "node": node,
+      "type": type_,
+      "payload": payload_json,
+    }),
+  )
 }
 
 /// One `handle` invocation, fully instrumented: builds the per-delivery
@@ -1382,5 +1476,192 @@ mod tests {
       elapsed >= Duration::from_millis(50),
       "expected backoff delay, took {elapsed:?}"
     );
+  }
+
+  // ---- route_to_error (error output port) -------------------------------------
+
+  use fuchsia_transport::CorrelationId;
+
+  /// An `Emit` sink that records every `(port, message)` emitted on it, plus the
+  /// correlation in scope at emit time — so a test can assert the runtime stamped
+  /// the error envelope with the triggering delivery's run id.
+  struct RecorderEmit {
+    emitted: Mutex<Vec<(String, Message)>>,
+    correlations: Mutex<Vec<Option<String>>>,
+    notify: Notify,
+  }
+
+  impl RecorderEmit {
+    fn new() -> Arc<Self> {
+      Arc::new(Self {
+        emitted: Mutex::new(Vec::new()),
+        correlations: Mutex::new(Vec::new()),
+        notify: Notify::new(),
+      })
+    }
+  }
+
+  impl Emit for RecorderEmit {
+    fn emit_to(&self, port: &str, msg: Message) {
+      // Capture the correlation in scope when the runtime emits — proving the
+      // envelope rides the triggering delivery's run, not a fresh/absent one.
+      self
+        .correlations
+        .lock()
+        .unwrap()
+        .push(CorrelationId::current().map(|c| c.as_str().to_owned()));
+      self.emitted.lock().unwrap().push((port.to_owned(), msg));
+      self.notify.notify_one();
+    }
+  }
+
+  /// Spawn a `FailActor` under `policy` with `recorder` as its `emit` sink.
+  async fn spawn_failing_with_emit(
+    rt: &mut Runtime,
+    id: &str,
+    fail_first: u32,
+    policy: FailurePolicy,
+    recorder: Arc<RecorderEmit>,
+  ) -> (Arc<Health>, Arc<FailProbe>) {
+    let probe = FailProbe::new(fail_first);
+    rt.register(
+      "fail",
+      FailCreator {
+        probe: probe.clone(),
+      },
+    );
+    let config = ActorConfig {
+      failure: policy,
+      ..Default::default()
+    };
+    let caps = ActorCapabilities::new().with_emit(recorder);
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(actor_id(id), "fail", &config, caps)
+      .await
+      .unwrap();
+    drop(tx);
+    (health, probe)
+  }
+
+  #[tokio::test]
+  async fn route_to_error_emits_envelope_and_keeps_going() {
+    // Error once, then succeed. The errored message is diverted to the `"error"`
+    // port as an envelope; the node keeps handling the next message.
+    let mut rt = Runtime::new();
+    let recorder = RecorderEmit::new();
+    let (health, probe) = spawn_failing_with_emit(
+      &mut rt,
+      "a",
+      1,
+      FailurePolicy::route_to_error(),
+      recorder.clone(),
+    )
+    .await;
+
+    // A JSON payload so we can assert the envelope carries the original value.
+    let msg = Message::json("reading", serde_json::json!({ "temp": 42 }));
+    rt.deliver(&actor_id("a"), msg).await.unwrap();
+    recorder.notify.notified().await;
+
+    // Exactly one emission, on the reserved `"error"` port.
+    {
+      let emitted = recorder.emitted.lock().unwrap();
+      assert_eq!(emitted.len(), 1);
+      let (port, envelope) = &emitted[0];
+      assert_eq!(port, "error");
+      assert_eq!(envelope.type_, "error");
+      let MessageValue::Json(body) = &envelope.value else {
+        panic!("envelope payload should be JSON");
+      };
+      // The envelope carries the error string, node id, original type + payload.
+      assert_eq!(body["error"], "handle failed: intentional");
+      assert_eq!(body["node"], "a");
+      assert_eq!(body["type"], "reading");
+      assert_eq!(body["payload"], serde_json::json!({ "temp": 42 }));
+    }
+
+    // Diverted, not retriable: the ack reports `Ok`, so Health counts it handled
+    // (not errored) and the node is not dead.
+    assert_eq!(health.handled(), 1);
+    assert_eq!(health.errored(), 0);
+    assert_eq!(health.died(), 0);
+
+    // The node kept handling: a second (succeeding) message is processed.
+    rt.deliver(&actor_id("a"), Message::empty("two"))
+      .await
+      .unwrap();
+    while probe.calls.load(Ordering::SeqCst) < 2 {
+      probe.notify.notified().await;
+    }
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+    // No second emission — the success path emits nothing on `"error"`.
+    assert_eq!(recorder.emitted.lock().unwrap().len(), 1);
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  #[tokio::test]
+  async fn route_to_error_envelope_carries_the_triggering_correlation() {
+    // The error envelope must be stamped with the *delivery's* correlation so the
+    // right run's error branch fires — even though it's emitted after `handle`'s
+    // own scope has ended.
+    let mut rt = Runtime::new();
+    let recorder = RecorderEmit::new();
+    let (_health, _probe) = spawn_failing_with_emit(
+      &mut rt,
+      "a",
+      u32::MAX, // always error
+      FailurePolicy::route_to_error(),
+      recorder.clone(),
+    )
+    .await;
+
+    // Push through the engine-style path with a known correlation, so we can
+    // assert the envelope inherits exactly it. `deliver` mints a fresh id per
+    // delivery; to control it we send a delivery carrying our own correlation.
+    let known = CorrelationId::from("run-route-to-error");
+    {
+      let (mailbox, health) = {
+        let registry = rt.registry.lock().unwrap();
+        let handle = registry.get(&actor_id("a")).unwrap();
+        (handle.mailbox().clone(), handle.health().clone())
+      };
+      let delivery =
+        Delivery::with_correlation(Message::empty("boom"), Ack::Health(health), known.clone());
+      assert!(mailbox.send(delivery).await.is_ok());
+    }
+
+    recorder.notify.notified().await;
+
+    let correlations = recorder.correlations.lock().unwrap();
+    assert_eq!(correlations.len(), 1);
+    assert_eq!(correlations[0].as_deref(), Some("run-route-to-error"));
+  }
+
+  #[tokio::test]
+  async fn route_to_error_encodes_binary_payload_as_byte_length_marker() {
+    // A binary payload can't be embedded in the JSON envelope, so it's rendered
+    // as a `{ "byte_len": <len> }` marker; `bytes` is reserved for a base64 of
+    // the content if binary logging is added later.
+    let mut rt = Runtime::new();
+    let recorder = RecorderEmit::new();
+    let _ = spawn_failing_with_emit(
+      &mut rt,
+      "a",
+      1,
+      FailurePolicy::route_to_error(),
+      recorder.clone(),
+    )
+    .await;
+
+    rt.deliver(&actor_id("a"), Message::binary("blob", vec![1, 2, 3, 4, 5]))
+      .await
+      .unwrap();
+    recorder.notify.notified().await;
+
+    let emitted = recorder.emitted.lock().unwrap();
+    let MessageValue::Json(body) = &emitted[0].1.value else {
+      panic!("envelope payload should be JSON");
+    };
+    assert_eq!(body["payload"], serde_json::json!({ "byte_len": 5 }));
   }
 }

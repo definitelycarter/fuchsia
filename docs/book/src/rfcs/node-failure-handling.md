@@ -1,15 +1,18 @@
 # RFC: Node Failure Handling
 
-> **Status: in progress — parts 1–2 (death detection + error policy) shipped.** The
+> **Status: in progress — parts 1–3 (death detection + error policy + error port) shipped.** The
 > three open questions are resolved (see [Decisions](#decisions)). Part 1: the runtime
 > keeps the actor task's `JoinHandle`, a per-node supervisor deregisters a dead node so
 > it stops resolving, records a distinct `Health::died` count, and surfaces a death
 > callback the engine reacts to. Part 2: a typed, host-understood `FailurePolicy` on
 > `ActorConfig` (continue / fail / retry-with-backoff), applied by the run loop around
 > `handle` — `fail` reuses the part-1 death path; an exhausted `retry` currently falls
-> back to count-and-drop until the dead-letter sink (part 4) lands. Parts 3–4 (error
-> port, dead-letter) and restart/poison are pending. Tracked in the
-> [roadmap](../reference/roadmap.md#features) Features table.
+> back to count-and-drop until the dead-letter sink (part 4) lands. Part 3: an
+> `OnError::RouteToError` arm — on a handled `Err` the run loop emits an error envelope
+> (error string + node id + original type/payload) on the node's reserved `"error"`
+> port, stamped with the triggering delivery's correlation, then continues; the diverted
+> error reports `Ok` on the ack (not retriable). Part 4 (dead-letter) and restart/poison
+> are pending. Tracked in the [roadmap](../reference/roadmap.md#features) Features table.
 
 ## Concept
 
@@ -312,3 +315,8 @@ counter here covers the *internal-routing* retries the feeder can't see.
   channel) versus polling liveness off the router: an observability decision,
   deferred. `restart_node` needs only the router's liveness, which death detection
   already maintains.
+- **Binary payload in the error envelope.** A binary message surfaces in the
+  `route_to_error` envelope as a `{ "byte_len": <len> }` marker — enough to triage
+  (the `type`/`node`/`error` identify the failed message), but not the bytes. The
+  `byte_len` name leaves `bytes` free for a base64 of the content, to be added for
+  binary logging / UI inspection when a consumer needs to replay or display it.

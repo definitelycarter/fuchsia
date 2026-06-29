@@ -19,8 +19,8 @@ use serde::Deserialize;
 ///   `poison_after: u32` are coming — see the node-failure-handling RFC) without
 ///   breaking the struct's construction (callers build it with
 ///   `..Default::default()`).
-/// - [`OnError`] is itself `#[non_exhaustive]`, so the future `RouteToError`
-///   arm (the reserved error output port) is a non-breaking addition.
+/// - [`OnError`] is itself `#[non_exhaustive]`, so a future arm (e.g. the
+///   dead-letter terminal action) is a non-breaking addition.
 ///
 /// `Deserialize` is derived so a product can parse its own JSON (`on_error`
 /// block) straight into this; the runtime/engine construct it programmatically.
@@ -49,13 +49,21 @@ impl FailurePolicy {
       on_error: OnError::Fail,
     }
   }
+
+  /// A policy that, on an errored `handle`, emits an error envelope on the
+  /// node's reserved `"error"` port and keeps the node alive — the failure is
+  /// *diverted* to the error branch, not retried. See [`OnError::RouteToError`].
+  pub fn route_to_error() -> Self {
+    Self {
+      on_error: OnError::RouteToError,
+    }
+  }
 }
 
 /// What the runtime does when an actor's `handle` returns `Err`.
 ///
-/// `#[non_exhaustive]` so the RFC's future `RouteToError` arm — emit the failed
-/// message on the node's reserved `"error"` port (part 3) — can be added without
-/// breaking exhaustive `match`es in downstream code.
+/// `#[non_exhaustive]` so a future arm can be added without breaking exhaustive
+/// `match`es in downstream code (e.g. the dead-letter terminal action, part 4).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -80,6 +88,15 @@ pub enum OnError {
     #[serde(default)]
     backoff: Backoff,
   },
+  /// On a handled `Err`, emit an **error envelope** — the error string, the node
+  /// id, and the original message's type/payload — on the node's reserved
+  /// `"error"` output port, then keep handling the next message. A flow wires
+  /// that port to an error-handling sub-graph (n8n's "error workflow"); if
+  /// nothing is wired, the engine counts the emit as `no_route` on
+  /// `(node, "error")` (the dead-letter sink in part 4 becomes the real
+  /// catch-all). The runtime emits on the node's behalf, so the failure is
+  /// *diverted* — not retried — and the node continues.
+  RouteToError,
 }
 
 fn default_max_retries() -> u32 {
@@ -211,5 +228,21 @@ mod tests {
     let on_error: OnError =
       serde_json::from_value(serde_json::json!({ "policy": "fail" })).expect("parse");
     assert_eq!(on_error, OnError::Fail);
+  }
+
+  #[test]
+  fn deserializes_route_to_error() {
+    // `#[serde(rename_all = "snake_case")]` → the snake_case discriminant.
+    let on_error: OnError =
+      serde_json::from_value(serde_json::json!({ "policy": "route_to_error" })).expect("parse");
+    assert_eq!(on_error, OnError::RouteToError);
+  }
+
+  #[test]
+  fn route_to_error_constructor_sets_arm() {
+    assert_eq!(
+      FailurePolicy::route_to_error().on_error,
+      OnError::RouteToError
+    );
   }
 }

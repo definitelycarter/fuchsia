@@ -2,15 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use fuchsia_actor::{ActorId, DEFAULT_PORT, Emit, Message, OutputPorts};
+use fuchsia_actor::{ActorId, DEFAULT_PORT, ERROR_PORT, Emit, Message, OutputPorts};
 use fuchsia_transport::{Ack, Delivery, Health, MailboxTx, Offer};
 
 use crate::error::EngineError;
-
-/// The reserved error port. Always accepted by `add_edge` (even on a `Fixed`
-/// node that does not list it) so the failure-handling branch can be wired
-/// before that machinery exists. See node failure handling.
-const ERROR_PORT: &str = "error";
 
 /// One outgoing edge: which actor a port's emission reaches. A *named struct*,
 /// not a bare `ActorId`, so a dest-side `to_port` (named **input** ports, the
