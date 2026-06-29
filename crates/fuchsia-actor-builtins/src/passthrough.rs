@@ -14,16 +14,8 @@ pub struct Passthrough {
 
 #[async_trait]
 impl Actor for Passthrough {
-  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-    Ok(())
-  }
-
   async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     self.emit.emit(msg);
-    Ok(())
-  }
-
-  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

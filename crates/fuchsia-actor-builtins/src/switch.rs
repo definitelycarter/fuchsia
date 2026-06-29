@@ -64,17 +64,9 @@ impl Switch {
 
 #[async_trait]
 impl Actor for Switch {
-  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-    Ok(())
-  }
-
   async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     let port = self.port_for(&msg).to_owned();
     self.emit.emit_to(&port, msg);
-    Ok(())
-  }
-
-  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

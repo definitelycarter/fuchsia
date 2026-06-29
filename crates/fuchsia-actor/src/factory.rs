@@ -83,6 +83,37 @@ impl ActorFactory {
     self.creators.insert(type_name.into(), Box::new(creator));
   }
 
+  /// Register a closure directly as a node type — none of the `struct`,
+  /// `ActorCreator`, `impl Actor` triple. `builder` is called once per node
+  /// instance with that node's `config` and `caps` (pull `caps.emit()` and hand
+  /// it to [`from_fn`](crate::from_fn)), and returns the built actor. Sugar over
+  /// a [`FnCreator`], so the node routes, validates, and tears down like any
+  /// other.
+  ///
+  /// The node's output ports default to [`OutputPorts::Dynamic`] — a closure's
+  /// ports are whatever it emits on. Use [`register_fn_with_ports`](Self::register_fn_with_ports)
+  /// to declare a fixed, validatable interface instead.
+  pub fn register_fn<F>(&mut self, type_name: impl Into<String>, builder: F)
+  where
+    F: Fn(&ActorConfig, &ActorCapabilities) -> Box<dyn Actor> + Send + Sync + 'static,
+  {
+    self.register(type_name, FnCreator::new(builder));
+  }
+
+  /// Like [`register_fn`](Self::register_fn), but the node declares a fixed set
+  /// of output `ports` ([`OutputPorts::Fixed`]) so the engine can validate edges
+  /// against them — for a closure node with a known interface.
+  pub fn register_fn_with_ports<F>(
+    &mut self,
+    type_name: impl Into<String>,
+    ports: Vec<String>,
+    builder: F,
+  ) where
+    F: Fn(&ActorConfig, &ActorCapabilities) -> Box<dyn Actor> + Send + Sync + 'static,
+  {
+    self.register(type_name, FnCreator::with_ports(ports, builder));
+  }
+
   pub fn create(
     &self,
     type_name: &str,
@@ -124,6 +155,60 @@ impl Default for ActorFactory {
   }
 }
 
+/// An [`ActorCreator`] backed by a closure — the mechanism behind
+/// [`ActorFactory::register_fn`]. Holds the per-instance `builder` and the
+/// node's declared [`OutputPorts`]; `create` just invokes the builder, so a
+/// closure node is provisioned, routed, and torn down on the same path as any
+/// hand-written creator.
+pub struct FnCreator<F> {
+  builder: F,
+  ports: OutputPorts,
+}
+
+impl<F> FnCreator<F>
+where
+  F: Fn(&ActorConfig, &ActorCapabilities) -> Box<dyn Actor> + Send + Sync + 'static,
+{
+  /// A creator whose node has [`OutputPorts::Dynamic`] ports — the honest
+  /// default for a closure, whose ports are whatever it emits on.
+  pub fn new(builder: F) -> Self {
+    Self {
+      builder,
+      ports: OutputPorts::Dynamic,
+    }
+  }
+
+  /// A creator that declares a fixed set of output `ports`
+  /// ([`OutputPorts::Fixed`]), for a closure node with a known interface the
+  /// engine can validate edges against.
+  pub fn with_ports(ports: Vec<String>, builder: F) -> Self {
+    Self {
+      builder,
+      ports: OutputPorts::Fixed(ports),
+    }
+  }
+}
+
+impl<F> ActorCreator for FnCreator<F>
+where
+  F: Fn(&ActorConfig, &ActorCapabilities) -> Box<dyn Actor> + Send + Sync + 'static,
+{
+  fn create(
+    &self,
+    config: &ActorConfig,
+    caps: &ActorCapabilities,
+  ) -> Result<Box<dyn Actor>, ActorError> {
+    Ok((self.builder)(config, caps))
+  }
+
+  fn output_ports(&self, _config: &ActorConfig) -> OutputPorts {
+    // Cloned, not a refcount bump: `output_ports` is a wiring-time call (not the
+    // per-message path), and the trait hands back an owned descriptor. `Dynamic`
+    // clones for free; `Fixed` copies the small declared port list.
+    self.ports.clone()
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -132,15 +217,10 @@ mod tests {
 
   struct EchoActor;
 
+  // Only `handle` — relies on the trait's default no-op `setup`/`teardown`.
   #[async_trait]
   impl Actor for EchoActor {
-    async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-      Ok(())
-    }
     async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
-      Ok(())
-    }
-    async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
       Ok(())
     }
   }
@@ -219,6 +299,85 @@ mod tests {
     assert_eq!(
       FixedPortsCreator.output_ports(&ActorConfig::default()),
       OutputPorts::Fixed(vec!["true".to_owned(), "false".to_owned()])
+    );
+  }
+
+  // --- register_fn ------------------------------------------------------------
+
+  use crate::actor::Emit;
+  use std::sync::{Arc, Mutex};
+
+  /// Test sink recording the `(port, type)` of every emission.
+  struct Recorder(Arc<Mutex<Vec<(String, String)>>>);
+  impl Emit for Recorder {
+    fn emit_to(&self, port: &str, msg: Message) {
+      self.0.lock().unwrap().push((port.to_owned(), msg.type_));
+    }
+  }
+
+  #[tokio::test]
+  async fn register_fn_builds_a_working_closure_node() {
+    let mut factory = ActorFactory::new();
+    // A `tap` node type defined as just a closure: pull `emit` from caps and
+    // forward each message through `from_fn`.
+    factory.register_fn("tap", |_config, caps| {
+      crate::from_fn(caps.emit(), |_ctx, msg, emit| async move {
+        emit.emit(msg);
+        Ok(())
+      })
+    });
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let caps = ActorCapabilities::new().with_emit(Arc::new(Recorder(log.clone())));
+    let mut actor = factory
+      .create("tap", &ActorConfig::default(), &caps)
+      .unwrap();
+    actor
+      .handle(&ActorContext::new("e", "n", "t"), Message::empty("reading"))
+      .await
+      .unwrap();
+
+    assert_eq!(
+      *log.lock().unwrap(),
+      vec![("out".to_owned(), "reading".to_owned())]
+    );
+  }
+
+  #[test]
+  fn register_fn_defaults_to_dynamic_ports() {
+    let mut factory = ActorFactory::new();
+    factory.register_fn("tap", |_config, caps| {
+      crate::from_fn(caps.emit(), |_ctx, msg, emit| async move {
+        emit.emit(msg);
+        Ok(())
+      })
+    });
+    assert_eq!(
+      factory
+        .output_ports("tap", &ActorConfig::default())
+        .unwrap(),
+      OutputPorts::Dynamic
+    );
+  }
+
+  #[test]
+  fn register_fn_with_ports_declares_a_fixed_interface() {
+    let mut factory = ActorFactory::new();
+    factory.register_fn_with_ports(
+      "split",
+      vec!["left".to_owned(), "right".to_owned()],
+      |_config, caps| {
+        crate::from_fn(caps.emit(), |_ctx, msg, emit| async move {
+          emit.emit_to("left", msg);
+          Ok(())
+        })
+      },
+    );
+    assert_eq!(
+      factory
+        .output_ports("split", &ActorConfig::default())
+        .unwrap(),
+      OutputPorts::Fixed(vec!["left".to_owned(), "right".to_owned()])
     );
   }
 }

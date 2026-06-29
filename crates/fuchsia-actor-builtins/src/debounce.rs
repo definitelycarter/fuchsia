@@ -52,10 +52,6 @@ pub struct Debounce {
 
 #[async_trait]
 impl Actor for Debounce {
-  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-    Ok(())
-  }
-
   async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     match msg.type_.as_str() {
       // Quiet window elapsed — emit unless a newer input re-armed since.
@@ -81,10 +77,6 @@ impl Actor for Debounce {
         }
       }
     }
-    Ok(())
-  }
-
-  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

@@ -3,8 +3,8 @@
 Fuchsia is an actor-based dataflow runtime. A workflow is a graph of actors;
 routing between nodes lives in the graph (configuration), not in actor code.
 Each actor is a native Rust implementation, a Wasm component, or a Lua script,
-all behind a single `Actor` trait (`setup`/`handle`/`teardown`, async,
-over `&mut self`).
+all behind a single `Actor` trait (`handle` is the only required method;
+`setup`/`teardown` default to no-op — async, over `&mut self`).
 
 It is **handle-per-message**: the runtime owns the receive loop and calls the
 actor's `handle` per message — actors do not run their own loop. An actor's
@@ -25,8 +25,11 @@ Crates are layered bottom-up; each depends only on the layer below.
   - `fuchsia-actor` — The contract: `Actor` trait, `ActorCreator`/`ActorFactory`,
     `ActorCapabilities` (`Emit` / `Schedule`, plus the open bag for host capabilities), `Message` /
     `MessageValue`, `ActorContext`, `ActorConfig` (env + bson settings),
-    `ActorId`, `ActorError`, `COMPONENT_ENV_KEY`. The lean surface actor packs
-    depend on.
+    `ActorId`, `ActorError`, `COMPONENT_ENV_KEY`. `setup`/`teardown` default to
+    no-op (an actor can be just a `handle`), and `from_fn` /
+    `from_fn_with_state` / `ActorFactory::register_fn` (over a generic
+    `FnCreator`) write a node as a closure. The lean surface actor packs depend
+    on.
   - `fuchsia-transport` — Delivery plumbing: bounded `mailbox` (mpsc of
     `Delivery`), `Delivery` (message + `Ack` + trace span), `Ack`
     (`Health` at-most-once / `Complete` at-least-once), `Offer`. No `Transport`

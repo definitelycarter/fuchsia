@@ -29,10 +29,6 @@ pub struct Deadband {
 
 #[async_trait]
 impl Actor for Deadband {
-  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-    Ok(())
-  }
-
   async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     match numeric(&msg) {
       Some(value) => {
@@ -48,10 +44,6 @@ impl Actor for Deadband {
       // Can't deadband a non-number; let it through.
       None => self.emit.emit(msg),
     }
-    Ok(())
-  }
-
-  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

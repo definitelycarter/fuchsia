@@ -1,7 +1,14 @@
 # RFC: `from_fn` Actors & Default Lifecycle
 
-> **Status: proposed.** Tracked in the [roadmap](../reference/roadmap.md#features)
-> Features table until it lands.
+> **Status: implemented.** All three parts shipped in `fuchsia-actor`: the
+> `Actor` trait's default no-op `setup`/`teardown` (and the existing builtins
+> de-noised to just `handle`), the `from_fn` / `from_fn_with_state` adapters
+> (`from_fn.rs`), and `ActorFactory::register_fn` / `register_fn_with_ports` over
+> a generic `FnCreator` — routed end to end through the engine. The open
+> mechanics resolved as proposed: the adapter holds the `Arc<dyn Emit>` and
+> passes it to the handler, `ActorContext` is passed by value, and the handler
+> returns a `'static` future (state mutation is synchronous, before the future).
+> Stands as the durable design record.
 
 ## Concept
 
@@ -78,35 +85,49 @@ An adapter that wraps a handler closure as a `Box<dyn Actor>`, with the lifecycl
 defaulted to no-op. The model is stateful (`handle` is `&mut self`), so the useful
 form carries state the closure mutates:
 
+The adapter holds the `Arc<dyn Emit>` it was built with and hands a clone to the
+handler each call, so the closure just names an `emit` argument. As-shipped:
+
 ```rust
-// Stateless: a pure handle.
-let node = fuchsia_actor::from_fn(|ctx, msg, emit| async move {
+// Stateless: a pure handle. `emit` is the sink the adapter was built with.
+let node = fuchsia_actor::from_fn(emit, |ctx, msg, emit| async move {
     emit.emit(msg);
     Ok(())
 });
 
-// Stateful: state owned by the adapter, handed to the closure as `&mut S`.
-let node = fuchsia_actor::from_fn_with_state(0u64, |count, ctx, msg, emit| async move {
+// Stateful: state owned by the adapter, handed to the closure as `&mut S`. The
+// handler returns a `'static` future, so state mutation is synchronous — done in
+// the closure body, before the future the adapter awaits.
+let node = fuchsia_actor::from_fn_with_state(0u64, emit, |count, ctx, msg, emit| {
     *count += 1;
-    emit.emit_to("out", msg);
-    Ok(())
+    let seq = *count;
+    async move {
+        emit.emit_to("out", msg);
+        let _ = seq;
+        Ok(())
+    }
 });
 ```
 
-The open mechanics (see [Open questions](#open-questions)):
+The open mechanics, resolved (see [Open questions](#open-questions)):
 
 - **`emit` access.** An actor's `emit` capability is injected at *construction*, not
-  available to a free-standing closure. So `from_fn` either (a) takes `emit` as a
-  closure argument (shown above — the adapter holds the `Arc<dyn Emit>` it was built
-  with and passes it in), or (b) the closure captures it. Option (a) keeps the
-  closure free of capture ceremony and is the proposed shape.
-- **Async-closure bounds.** Roughly `F: FnMut(&mut S, &ActorContext, Message, Arc<dyn Emit>)
-  -> Fut`, `Fut: Future<Output = Result<(), ActorError>> + Send`. The wrinkle is the
-  borrow of `&mut S` (and `&ActorContext`) across the returned future's `.await`
-  points — the classic pre-async-closure lifetime friction. Passing `ActorContext`
-  *by value* (it is three small `String`s) sidesteps the context borrow and ties into
-  the roadmap's [`ActorContext` ids as `Arc<str>`](../reference/roadmap.md#open-questions)
-  question.
+  available to a free-standing closure. Resolved with option (a): `from_fn` takes the
+  `Arc<dyn Emit>`, the adapter holds it, and passes a refcount-bumped clone to the
+  handler as an argument — the closure stays free of capture ceremony. (The RFC's
+  earlier sketch elided this constructor argument; the adapter must hold the sink to
+  pass it in.)
+- **Async-closure bounds.** As-shipped: `F: FnMut(&mut S, ActorContext, Message,
+  Arc<dyn Emit>) -> Fut + Send + 'static`, `Fut: Future<Output = Result<(),
+  ActorError>> + Send + 'static`. The `'static` future cannot borrow `&mut S` or
+  `&ActorContext` across its `.await` points — the classic pre-async-closure lifetime
+  friction. Two moves sidestep it cleanly without the HRTB-closure inference problems
+  a borrow-across-await (boxed-future) bound would hit: `ActorContext` is passed *by
+  value* (three small `String`s — ties into the roadmap's
+  [`ActorContext` ids as `Arc<str>`](../reference/roadmap.md#open-questions) question),
+  and any state mutation happens synchronously in the closure body before the future
+  is produced. Since fuchsia's `emit`/`schedule` are synchronous, glue handlers rarely
+  need to hold state across an await anyway.
 
 ### 3. `register_fn` — a closure as a node type
 
@@ -117,19 +138,23 @@ construction inputs (`ActorConfig` + `ActorCapabilities`) and returns the actor:
 
 ```rust
 factory.register_fn("tap", |config, caps| {
-    let emit = caps.emit();
-    from_fn(move |ctx, msg, _emit| {
-        let emit = emit.clone();           // refcount bump
-        async move { emit.emit(msg); Ok(()) }
+    from_fn(caps.emit(), |ctx, msg, emit| async move {
+        emit.emit(msg);
+        Ok(())
     })
 });
 ```
 
-This is sugar over a generic `FnCreator { f }` implementing `ActorCreator` — the
+This is sugar over a generic `FnCreator` implementing `ActorCreator` — the
 factory/runtime path is unchanged, so a `register_fn` node validates ports, routes,
 and tears down like any other. `output_ports` defaults to `Dynamic` (a closure's
-ports are whatever it emits on), with an optional builder to declare `Fixed` ports
-for editor/validation use.
+ports are whatever it emits on); `register_fn_with_ports(name, ports, builder)`
+declares `Fixed` ports for editor/validation use. `FnCreator` is public
+(`FnCreator::new` / `FnCreator::with_ports`), so a closure node can also be handed
+straight to `engine.register` — which is how the end-to-end engine test wires one.
+The `builder` is infallible (`Fn(&ActorConfig, &ActorCapabilities) -> Box<dyn
+Actor>`); a closure that needs to fail at construction (e.g. parsing `settings`)
+still uses a hand-written `ActorCreator`.
 
 ## Alternatives considered
 
@@ -147,17 +172,21 @@ for editor/validation use.
 
 ## Open questions
 
-- **Stateful-closure ergonomics.** `from_fn_with_state` vs an `FnMut` capturing its
-  own state vs requiring `'static` owned futures — which spelling stays ergonomic
-  without `async` closures? Worth a small spike against the current `async_trait`
-  setup before committing to a signature.
-- **Scope: `Actor::from_fn` vs `register_fn`.** Ship only the test/example adapter
-  (§2), or go all the way to closure node types (§3)? §3 is the product-facing win but
-  the larger surface.
-- **`ActorContext` by value or by ref in the closure.** By-value avoids the
-  cross-`await` borrow but copies the ids per message; ties to the
-  [`Arc<str>` ids](../reference/roadmap.md#open-questions) decision.
-- **Naming.** `from_fn` / `from_fn_with_state` / `register_fn`, or a single builder?
-  Match Rust std/`tower`-style `from_fn` conventions.
-- **Sequencing.** §1 touches `actor.rs` and is independent; land it on its own (it
-  also de-noises the existing builtins) before the larger §2/§3 design.
+All resolved as implemented:
+
+- **Stateful-closure ergonomics.** *Resolved:* `from_fn_with_state(init, emit,
+  handler)` with `handler: FnMut(&mut S, …) -> Fut` and `Fut: 'static`. The
+  `'static` future can't retain the `&mut S` borrow, so state mutation is
+  synchronous (in the closure body, before the future). This compiles cleanly for
+  closure literals — the alternative (a `for<'a> FnMut(&'a mut S, …) -> Pin<Box<dyn
+  Future + 'a>>` bound that allows borrowing state across the await) hits the
+  well-known HRTB-closure inference friction.
+- **Scope: `Actor::from_fn` vs `register_fn`.** *Resolved:* shipped both §2 and §3.
+- **`ActorContext` by value or by ref in the closure.** *Resolved:* by value, to
+  avoid the cross-`await` borrow; still ties to the
+  [`Arc<str>` ids](../reference/roadmap.md#open-questions) decision (which would make
+  the per-message copy a refcount bump).
+- **Naming.** *Resolved:* `from_fn` / `from_fn_with_state` (free functions, std/
+  `tower`-style) and `ActorFactory::register_fn` / `register_fn_with_ports`.
+- **Sequencing.** §1 landed first (it de-noises the builtins on its own), then the
+  §2/§3 surface — all in one effort here.

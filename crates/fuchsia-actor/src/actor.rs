@@ -187,9 +187,17 @@ impl ActorContext {
 
 #[async_trait]
 pub trait Actor: Send + 'static {
-  async fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+  /// Called once before the first `handle`. Defaults to a no-op, so an actor
+  /// with no startup work implements only `handle`.
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    Ok(())
+  }
   async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError>;
-  async fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+  /// Called once after the last `handle`. Defaults to a no-op, so an actor with
+  /// no teardown work implements only `handle`.
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    Ok(())
+  }
 }
 
 #[cfg(test)]

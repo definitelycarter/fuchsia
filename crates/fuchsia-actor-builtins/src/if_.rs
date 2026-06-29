@@ -39,10 +39,6 @@ pub struct If {
 
 #[async_trait]
 impl Actor for If {
-  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-    Ok(())
-  }
-
   async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     let port = if self.condition.evaluate(&msg)? {
       TRUE_PORT
@@ -50,10 +46,6 @@ impl Actor for If {
       FALSE_PORT
     };
     self.emit.emit_to(port, msg);
-    Ok(())
-  }
-
-  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }

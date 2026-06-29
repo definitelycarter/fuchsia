@@ -17,7 +17,6 @@ lands (no strikethrough).
 | Config import for guests | Forward a `Component` node's `settings` into a Wasm/Lua guest (e.g. a `config.get(key)` import). Today only native actors read `settings`; guests receive only `ctx` + payload. | `fuchsia-actor-wasm`, `fuchsia-actor-lua` |
 | Capability-style device binding | Bind each actor instance to one host-side device handle (BLE/MQTT/…) so guest-side functions never name addresses | host crates, per-capability WIT |
 | Distributed actors | Patterns + sample host code for splitting a graph across processes via transport actors | likely host docs, not core |
-| `from_fn` actors & default lifecycle | Default no-op `setup`/`teardown` so an actor is just a `handle`; `from_fn`/`register_fn` to write a node as a closure (no struct/impl/creator). See [RFC](../rfcs/from-fn-actors.md). | `fuchsia-actor` |
 
 ## Gaps
 

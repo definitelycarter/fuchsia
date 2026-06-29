@@ -18,10 +18,6 @@ pub struct Dedup {
 
 #[async_trait]
 impl Actor for Dedup {
-  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
-    Ok(())
-  }
-
   async fn handle(&mut self, _ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
     if self.last.as_ref() != Some(&msg.value) {
       // Retain a copy to compare against the next message before handing the
@@ -29,10 +25,6 @@ impl Actor for Dedup {
       self.last = Some(msg.value.clone());
       self.emit.emit(msg);
     }
-    Ok(())
-  }
-
-  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
     Ok(())
   }
 }
