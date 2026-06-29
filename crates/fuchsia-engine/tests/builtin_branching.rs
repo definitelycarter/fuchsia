@@ -9,7 +9,7 @@ use fuchsia_actor::{
   async_trait,
 };
 use fuchsia_actor_builtins::IfCreator;
-use fuchsia_engine::Engine;
+use fuchsia_engine::{CorrelationId, Engine};
 use tokio::sync::Notify;
 
 struct Recorder {
@@ -98,6 +98,7 @@ async fn if_routes_true_branch_and_leaves_false_unwired() {
     .push(
       &hot,
       Message::json("reading", serde_json::json!({ "temp": 42 })),
+      CorrelationId::new(),
     )
     .unwrap();
   notify.notified().await;
@@ -110,6 +111,7 @@ async fn if_routes_true_branch_and_leaves_false_unwired() {
     .push(
       &hot,
       Message::json("reading", serde_json::json!({ "temp": 20 })),
+      CorrelationId::new(),
     )
     .unwrap();
 

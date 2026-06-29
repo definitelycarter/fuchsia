@@ -10,6 +10,7 @@ use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Message,
   async_trait,
 };
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::{Engine, EngineError};
 
 // ---- Ok actor (handles successfully, counts what it handled) ----
@@ -176,7 +177,11 @@ async fn push_durable_resolves_ok_when_handled() {
 
   // Resolving Ok *is* the at-least-once confirmation that the node handled it.
   engine
-    .push_durable(&ActorId::new("entry"), Message::empty("job"))
+    .push_durable(
+      &ActorId::new("entry"),
+      Message::empty("job"),
+      CorrelationId::new(),
+    )
     .await
     .unwrap();
 
@@ -200,7 +205,11 @@ async fn push_durable_surfaces_handler_error() {
   // Ok(Err(..)) from the runner → the retriable handler-error variant, carrying
   // the original `ActorError` so the caller can decide to dead-letter a poison.
   let err = engine
-    .push_durable(&ActorId::new("entry"), Message::empty("job"))
+    .push_durable(
+      &ActorId::new("entry"),
+      Message::empty("job"),
+      CorrelationId::new(),
+    )
     .await
     .unwrap_err();
   assert!(matches!(err, EngineError::Handle(ActorError::Handle(_))));
@@ -211,7 +220,11 @@ async fn push_durable_to_unknown_node_is_not_found() {
   let engine = Engine::new();
 
   let err = engine
-    .push_durable(&ActorId::new("missing"), Message::empty("job"))
+    .push_durable(
+      &ActorId::new("missing"),
+      Message::empty("job"),
+      CorrelationId::new(),
+    )
     .await
     .unwrap_err();
   assert!(matches!(err, EngineError::NotFound(_)));
@@ -241,7 +254,11 @@ async fn push_durable_reports_lost_when_actor_dies_mid_handle() {
   // Complete ack unreported, so the oneshot closes → `Lost` (retry-on-loss).
   // (A panic backtrace is printed; the test still passes.)
   let err = engine
-    .push_durable(&ActorId::new("entry"), Message::empty("job"))
+    .push_durable(
+      &ActorId::new("entry"),
+      Message::empty("job"),
+      CorrelationId::new(),
+    )
     .await
     .unwrap_err();
   assert!(matches!(err, EngineError::Lost));
@@ -276,7 +293,11 @@ async fn push_durable_waits_on_a_full_mailbox_instead_of_shedding() {
     let engine = engine.clone();
     tasks.push(tokio::spawn(async move {
       engine
-        .push_durable(&ActorId::new("entry"), Message::empty("job"))
+        .push_durable(
+          &ActorId::new("entry"),
+          Message::empty("job"),
+          CorrelationId::new(),
+        )
         .await
     }));
   }

@@ -5,6 +5,7 @@ use fuchsia_actor::{
   async_trait,
 };
 use fuchsia_actor_builtins::PassthroughCreator;
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::{Engine, EngineError};
 use tokio::sync::Notify;
 
@@ -97,7 +98,11 @@ async fn groups_isolate_and_tear_down_independently() {
 
   // Push into g1 only; it must land on g1's recorder, not g2's.
   engine
-    .push(&ActorId::scoped("g1", "a"), Message::empty("ping"))
+    .push(
+      &ActorId::scoped("g1", "a"),
+      Message::empty("ping"),
+      CorrelationId::new(),
+    )
     .unwrap();
   notify.notified().await;
   {
@@ -111,14 +116,22 @@ async fn groups_isolate_and_tear_down_independently() {
   // g1's entrypoint is gone.
   assert!(matches!(
     engine
-      .push(&ActorId::scoped("g1", "a"), Message::empty("x"))
+      .push(
+        &ActorId::scoped("g1", "a"),
+        Message::empty("x"),
+        CorrelationId::new()
+      )
       .unwrap_err(),
     EngineError::NotFound(_)
   ));
 
   // g2 still routes after g1's teardown.
   engine
-    .push(&ActorId::scoped("g2", "a"), Message::empty("pong"))
+    .push(
+      &ActorId::scoped("g2", "a"),
+      Message::empty("pong"),
+      CorrelationId::new(),
+    )
     .unwrap();
   notify.notified().await;
   {

@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorCreator, ActorId, Emit, Message};
 use fuchsia_runtime::Runtime;
-use fuchsia_transport::{Ack, Delivery, Outcome};
+use fuchsia_transport::{Ack, CorrelationId, Delivery, Outcome};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::error::EngineError;
@@ -195,12 +195,29 @@ impl Engine {
   /// each actor's `emit`. The ingress *actor* itself receives via its mailbox
   /// and emits onward; it does not call this. Best-effort, at-most-once: the
   /// target's `Health` records the outcome, and an unknown id is `NotFound`.
-  pub fn push(&self, entrypoint: &ActorId, msg: Message) -> Result<(), EngineError> {
+  ///
+  /// `id` is the run's [`CorrelationId`], minted **here at the trigger** and
+  /// propagated automatically from this entry through every emit/hop and the
+  /// guest boundary (actors and guests never manage it). Mint a fresh one with
+  /// [`CorrelationId::new`] when there's nothing to correlate to, or pass an
+  /// existing id (an external request/trace id, or a parent run's id). Taking
+  /// the id rather than minting-and-returning lets a trigger register its result
+  /// collector *before* the run starts, so a fast run can't finish first.
+  pub fn push(
+    &self,
+    entrypoint: &ActorId,
+    msg: Message,
+    id: CorrelationId,
+  ) -> Result<(), EngineError> {
     let state = self.router.read().map_err(|_| EngineError::Lock)?;
     let (mailbox, health) = state
       .target(entrypoint)
       .ok_or_else(|| EngineError::NotFound(entrypoint.clone()))?;
-    let _ = mailbox.offer(Delivery::new(msg, Ack::Health(health.clone())));
+    let _ = mailbox.offer(Delivery::with_correlation(
+      msg,
+      Ack::Health(health.clone()),
+      id,
+    ));
     Ok(())
   }
 
@@ -235,8 +252,16 @@ impl Engine {
   /// arrive before the lease expires is re-invoked, so entrypoints reached this
   /// way must be idempotent / deduplicated.
   ///
+  /// `id` is the run's [`CorrelationId`], exactly as on [`push`](Self::push) —
+  /// minted at the trigger and propagated automatically downstream.
+  ///
   /// [`MailboxTx::send`]: fuchsia_transport::MailboxTx::send
-  pub async fn push_durable(&self, entrypoint: &ActorId, msg: Message) -> Result<(), EngineError> {
+  pub async fn push_durable(
+    &self,
+    entrypoint: &ActorId,
+    msg: Message,
+    id: CorrelationId,
+  ) -> Result<(), EngineError> {
     // Resolve the target and clone its mailbox sender, then drop the read guard
     // *before* any `.await`. Holding a `std` RwLock guard across an await would
     // make this future `!Send` (it could not be spawned) and would block
@@ -256,7 +281,7 @@ impl Engine {
     // `rx` observes a closed channel — the documented retry-on-loss signal.
     let (tx, rx) = oneshot::channel::<Outcome>();
     mailbox
-      .send(Delivery::new(msg, Ack::Complete(tx)))
+      .send(Delivery::with_correlation(msg, Ack::Complete(tx), id))
       .await
       .map_err(|_| EngineError::Undelivered)?;
 

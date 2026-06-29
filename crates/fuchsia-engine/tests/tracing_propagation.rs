@@ -13,6 +13,7 @@ use fuchsia_actor::{
   async_trait,
 };
 use fuchsia_actor_builtins::PassthroughCreator;
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::Engine;
 use tokio::sync::Notify;
 use tracing::Subscriber;
@@ -109,7 +110,11 @@ async fn trace_follows_a_message_across_the_mailbox_hop() {
   // Push within a root span; passthrough (a) re-emits → routes to sink (b).
   tracing::info_span!("ingress").in_scope(|| {
     engine
-      .push(&ActorId::new("a"), Message::empty("ping"))
+      .push(
+        &ActorId::new("a"),
+        Message::empty("ping"),
+        CorrelationId::new(),
+      )
       .unwrap();
   });
 

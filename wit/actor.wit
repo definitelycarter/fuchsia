@@ -6,6 +6,10 @@ package fuchsia:actor@0.1.0;
 interface actor {
   use types.{payload};
 
+  // Per-call identity the host fills in. `execution-id` is the run's
+  // correlation id — minted at the trigger and propagated by the host through
+  // every hop and into emissions, so a guest *reads* it but never threads it.
+  // `node-id` is the static actor id; `task-id` is a fresh per-message id.
   record context {
     execution-id: string,
     node-id: string,

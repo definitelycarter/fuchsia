@@ -38,8 +38,12 @@ pub enum MessageValue { Json(serde_json::Value), Binary(Vec<u8>), Empty }
 ```
 
 An **`ActorContext`** is per-call identity threaded through every invocation —
-`execution_id`, `node_id`, `task_id`. Capabilities are *not* on the context;
-they're injected once at construction (see [Capabilities](./host-capabilities.md)).
+`execution_id`, `node_id`, `task_id`. It is built **per delivery** (not per
+actor): `node_id` is the static actor id, `execution_id` is the **run** the
+message belongs to (the delivery's [correlation id](../rfcs/message-correlation-id.md),
+minted at the trigger and propagated automatically), and `task_id` is a fresh
+per-message id. Capabilities are *not* on the context; they're injected once at
+construction (see [Capabilities](./host-capabilities.md)).
 
 Actors are built by an **`ActorCreator`**, registered into an `ActorFactory`
 under a type name:
@@ -64,13 +68,17 @@ globally (and is the unit `remove_graph` tears down). It Displays as `group/id`
 Every actor reads from a bounded **mailbox** — a tokio mpsc of `Delivery`:
 
 ```rust
-pub struct Delivery { pub msg: Message, pub ack: Ack, pub span: Span }
+pub struct Delivery { pub msg: Message, pub ack: Ack, pub span: Span, pub correlation: CorrelationId }
 ```
 
 A `Delivery` carries the message, an **ack** that reports the handling outcome
-exactly once, and the **trace span** active where it was produced (so the
-receiver's handle span can be parented by it — that's how a trace follows a
-message across the task boundary).
+exactly once, the **trace span** active where it was produced (so the receiver's
+handle span can be parented by it — that's how a trace follows a message across
+the task boundary), and the **correlation id** — the *run* the message belongs
+to. `Delivery::new` captures both the current span *and* the current correlation
+(a task-local the runtime sets around each `handle`), so a run id flows
+trigger → emit → hop without any actor forwarding it. See
+[per-message correlation id](../rfcs/message-correlation-id.md).
 
 The ack has two shapes:
 
@@ -104,9 +112,13 @@ The loop itself:
 
 ```rust
 while let Some(delivery) = rx.recv().await {
-    let Delivery { msg, ack, span: parent } = delivery;
+    let Delivery { msg, ack, span: parent, correlation } = delivery;
     let span = tracing::debug_span!(parent: &parent, "actor.handle", …);
-    let outcome = actor.handle(&ctx, msg).instrument(span).await;
+    // Per-delivery context: execution_id = this run, task_id = this handling.
+    let msg_ctx = ActorContext::new(correlation.to_string(), node_id.clone(), next_task_id());
+    // Enter the correlation as a task-local for the handle (mirroring the span),
+    // so the actor's emits capture it and propagate the run id onward.
+    let outcome = correlation.scope(actor.handle(&msg_ctx, msg).instrument(span)).await;
     ack.report(outcome);
 }
 actor.teardown(&ctx).await;   // mailbox closed → drain → teardown
@@ -122,7 +134,12 @@ to trigger exactly that.
 timer that, on fire, **upgrades a weak handle** to the actor's own mailbox and
 `offer`s the message back. Weak so a pending timer can't keep a torn-down actor
 alive; the delayed message arrives through the normal `handle` path, tagged with
-the actor's own health ack. Time-based operators (debounce) arm these on input.
+the actor's own health ack. The arming run's
+[correlation id](../rfcs/message-correlation-id.md) is captured at `schedule_self`
+time and re-stamped on the delayed delivery, so a debounce's eventual emission
+stays attributed to the run that armed it (the timer fires on a detached task,
+outside the original `handle`'s scope). Time-based operators (debounce) arm these
+on input.
 
 ## Routing (`fuchsia-engine`)
 
@@ -160,9 +177,13 @@ port)` route counters). All methods take `&self`, so the engine is shared as
   port declarations, and counters.
   Scoped to the group; other graphs are untouched, and cross-group edges into it
   simply stop resolving (a graceful drop).
-- **`push(entrypoint, msg)`** — offers an external event into one node's mailbox
-  (best-effort, at-most-once; an unknown id is `NotFound`).
-- **`push_durable(entrypoint, msg)`** — the at-least-once counterpart: an `async`
+- **`push(entrypoint, msg, id)`** — offers an external event into one node's
+  mailbox (best-effort, at-most-once; an unknown id is `NotFound`). `id` is the
+  run's `CorrelationId`, minted here at the trigger (`CorrelationId::new()`, or an
+  adopted external/parent id) and propagated automatically downstream — taking it
+  rather than minting-and-returning lets a trigger register a result collector
+  before the run starts.
+- **`push_durable(entrypoint, msg, id)`** — the at-least-once counterpart: an `async`
   ingress that *sends* (backpressure, not shedding) with an `Ack::Complete` and
   **awaits the handle outcome**. `Ok(())` means the node actually handled the
   message, so a durable caller (a leased queue worker) can delete its job; a

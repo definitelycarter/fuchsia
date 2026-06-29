@@ -7,6 +7,7 @@ use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Emit,
   Message, OutputPorts, async_trait,
 };
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::{Engine, EngineError};
 use tokio::sync::Notify;
 
@@ -159,7 +160,11 @@ async fn emission_routes_only_to_the_matching_port() {
 
   // Push a message of type "true": the source emits it on the "true" port.
   engine
-    .push(&ActorId::new("src"), Message::empty("true"))
+    .push(
+      &ActorId::new("src"),
+      Message::empty("true"),
+      CorrelationId::new(),
+    )
     .unwrap();
   t_notify.notified().await;
 
@@ -309,7 +314,11 @@ async fn emitting_on_an_unwired_port_counts_no_route_and_delivers_nowhere() {
   // Dynamic) nor wired, so its no-route lands on the node's per-node *fallback*
   // bucket — counted, never silent — not under the exact "lonely" port name.
   engine
-    .push(&ActorId::new("src"), Message::empty("lonely"))
+    .push(
+      &ActorId::new("src"),
+      Message::empty("lonely"),
+      CorrelationId::new(),
+    )
     .unwrap();
 
   // Give the source's task time to handle and emit. Poll the fallback until the
@@ -365,7 +374,11 @@ async fn a_port_fans_out_to_several_edges() {
     .unwrap();
 
   engine
-    .push(&ActorId::new("src"), Message::empty("out"))
+    .push(
+      &ActorId::new("src"),
+      Message::empty("out"),
+      CorrelationId::new(),
+    )
     .unwrap();
   a_notify.notified().await;
   b_notify.notified().await;

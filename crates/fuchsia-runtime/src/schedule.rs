@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fuchsia_actor::{Message, Schedule};
-use fuchsia_transport::{Ack, Delivery, Health, WeakMailboxTx};
+use fuchsia_transport::{Ack, CorrelationId, Delivery, Health, WeakMailboxTx};
 
 /// In-process timer scheduler: delivers a delayed message back into an actor's
 /// own mailbox, so timers flow through the normal `handle` path.
@@ -20,10 +20,21 @@ impl Schedule for TokioSchedule {
   fn schedule_self(&self, after: Duration, msg: Message) {
     let mailbox = self.mailbox.clone();
     let health = self.health.clone();
+    // Capture the run that armed this timer (we're inside the actor's scoped
+    // `handle`). The timer fires on a detached task with no correlation in
+    // scope, so we re-stamp the delayed delivery here rather than let
+    // `Delivery::new` mint a fresh, unrelated run — a debounce's eventual
+    // emission stays attributed to the run that triggered it. Falls back to a
+    // fresh id if armed outside any run.
+    let correlation = CorrelationId::current().unwrap_or_default();
     tokio::spawn(async move {
       tokio::time::sleep(after).await;
       if let Some(tx) = mailbox.upgrade() {
-        let _ = tx.offer(Delivery::new(msg, Ack::Health(health)));
+        let _ = tx.offer(Delivery::with_correlation(
+          msg,
+          Ack::Health(health),
+          correlation,
+        ));
       }
     });
   }

@@ -94,7 +94,10 @@ interface emit {
 ```
 
 All three lifecycle exports are required; stateless components make `setup` /
-`teardown` no-ops returning `Ok(())`. The `payload` value mirrors `MessageValue`
+`teardown` no-ops returning `Ok(())`. The `context` record's `execution-id` is
+the run's [correlation id](../rfcs/message-correlation-id.md) — the host
+populates it per `handle` and stamps the component's emissions with the same id,
+so a guest reads `ctx.execution-id` but never threads it. The `payload` value mirrors `MessageValue`
 exactly — `json(string)` / `binary(list<u8>)` / `empty`. Outbound emissions go
 through the host-imported `emit` — `send-to(port, msg)` for a **named output
 port**, or `send(msg)` for the default `"out"` port — **not** through `handle`'s

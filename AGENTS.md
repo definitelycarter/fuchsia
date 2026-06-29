@@ -31,18 +31,23 @@ Crates are layered bottom-up; each depends only on the layer below.
     `FnCreator`) write a node as a closure. The lean surface actor packs depend
     on.
   - `fuchsia-transport` — Delivery plumbing: bounded `mailbox` (mpsc of
-    `Delivery`), `Delivery` (message + `Ack` + trace span), `Ack`
-    (`Health` at-most-once / `Complete` at-least-once), `Offer`. No `Transport`
-    trait — durability is layered in front of the channel.
+    `Delivery`), `Delivery` (message + `Ack` + trace span + `CorrelationId`),
+    `Ack` (`Health` at-most-once / `Complete` at-least-once), `Offer`. Owns
+    `CorrelationId` (the run id — an `Arc<str>` newtype) and the task-local that
+    propagates it like the span. No `Transport` trait — durability is layered in
+    front of the channel.
   - `fuchsia-runtime` — The actor substrate: `Runtime` owns the
-    recv→handle→ack loop (one tokio task per actor), runs the lifecycle, and
-    provides the `schedule` capability (`TokioSchedule`). `ActorRegistry` is
-    the live `ActorHandle` address book. Criterion bench under `benches/`.
+    recv→handle→ack loop (one tokio task per actor), runs the lifecycle, builds a
+    **per-delivery** `ActorContext` (with `execution_id` = the delivery's
+    correlation, entered as a task-local for the handle), and provides the
+    `schedule` capability (`TokioSchedule`). `ActorRegistry` is the live
+    `ActorHandle` address book. Criterion bench under `benches/`.
   - `fuchsia-engine` — Routing per a graph's edges. `Engine` (shareable as
-    `Arc`) does `add_node` / `add_edge` / `remove_graph` / `push` over a live
-    `RouterState`, and provides the `emit` capability (`RoutedEmit`). `add_edge`
-    rejects cycle-creating edges (self-loops and back-edges), so graphs stay
-    acyclic. Knows only actors + addressing.
+    `Arc`) does `add_node` / `add_edge` / `remove_graph` / `push(.., id)` over a
+    live `RouterState`, and provides the `emit` capability (`RoutedEmit`, which
+    stamps each emission with the current `CorrelationId`). `add_edge` rejects
+    cycle-creating edges (self-loops and back-edges), so graphs stay acyclic.
+    Knows only actors + addressing.
   - `fuchsia-actor-builtins` — Native builtin actors: `passthrough`,
     `debounce`, `deadband`, `dedup`, the branching nodes `if` / `switch` (over a
     `Condition` enum — declarative `field`/`op`/`value` with `all`/`any`, plus a

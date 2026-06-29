@@ -14,3 +14,7 @@ mod router;
 pub use engine::Engine;
 pub use error::EngineError;
 pub use router::RouteCounts;
+
+/// The run id a trigger mints for [`Engine::push`] / [`Engine::push_durable`].
+/// Re-exported so callers reach it through the engine surface they already use.
+pub use fuchsia_transport::CorrelationId;

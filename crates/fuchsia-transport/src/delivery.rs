@@ -5,6 +5,8 @@ use fuchsia_actor::{ActorError, Message};
 use tokio::sync::oneshot;
 use tracing::Span;
 
+use crate::correlation::CorrelationId;
+
 /// The outcome of handling one message. Reported exactly once per delivery.
 pub type Outcome = Result<(), ActorError>;
 
@@ -71,20 +73,44 @@ impl Ack {
 /// actor's handle span can be parented by it. That's how a trace follows a
 /// message across the mailbox/task boundary — the causal link that
 /// `#[instrument]` alone can't cross.
+///
+/// Alongside the span it carries a [`CorrelationId`] — the **run** the message
+/// belongs to — on the exact same rails: [`Delivery::new`] captures the current
+/// correlation just as it captures the current span, so a run id flows
+/// trigger → emit → hop without any actor forwarding it.
 pub struct Delivery {
   pub msg: Message,
   pub ack: Ack,
   /// The span active where this delivery was produced — the parent for the
   /// receiver's handle span. Disabled (near-free) when no subscriber is active.
   pub span: Span,
+  /// The run this message belongs to — captured from the current correlation
+  /// (the task-local set by the runtime before each `handle`), so it propagates
+  /// across the hop without an actor touching it.
+  pub correlation: CorrelationId,
 }
 
 impl Delivery {
+  /// Construct a delivery, capturing the current trace span **and** the current
+  /// correlation (the run in scope on this task). On an internal hop — an
+  /// actor's emit, routed inside its scoped `handle` — this inherits the
+  /// handling run's id automatically. With no run in scope (a cold,
+  /// trigger-side construction with nothing to correlate to) a fresh id is
+  /// minted, so a delivery always names a run.
   pub fn new(msg: Message, ack: Ack) -> Self {
+    Self::with_correlation(msg, ack, CorrelationId::current().unwrap_or_default())
+  }
+
+  /// Construct a delivery with an **explicit** correlation — used at a trigger
+  /// (`Engine::push`), which mints (`CorrelationId::new()`) or adopts an
+  /// external/parent run id *before* the run starts, rather than inheriting one
+  /// from a scope. Still captures the current trace span.
+  pub fn with_correlation(msg: Message, ack: Ack, correlation: CorrelationId) -> Self {
     Self {
       msg,
       ack,
       span: Span::current(),
+      correlation,
     }
   }
 }

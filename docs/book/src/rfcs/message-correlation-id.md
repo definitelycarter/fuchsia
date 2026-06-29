@@ -1,7 +1,11 @@
 # RFC: Per-Message Correlation Id
 
-> **Status: proposed.** Tracked in the [roadmap](../reference/roadmap.md#features)
-> Features table until it lands.
+> **Status: implemented.** The propagation mechanism has landed —
+> `CorrelationId` lives in `fuchsia-transport` (an `Arc<str>` newtype riding each
+> `Delivery` beside the span), the runtime sets it as a task-local and builds a
+> per-delivery `ActorContext`, and `Engine::push`/`push_durable` take the id. The
+> Open Questions (sub-execution causation chains, span↔correlation linkage,
+> ordering) are deferred.
 
 ## Concept
 
@@ -122,9 +126,15 @@ exists; the host populates it per `handle` call from the current correlation, an
 the host's `emit` impl stamps guest emissions from the same current value. A guest
 reads `ctx.execution-id` if it wants the id; it never has to thread it.
 
-**Id type.** An opaque newtype (`CorrelationId(Arc<str>)`, or a 128-bit id rendered
-lazily) — cheap to clone on the hot path, displayable in traces. Decided in
-implementation.
+**Id type.** Implemented as `CorrelationId(Arc<str>)` — opaque, `Display`, and
+cheap to clone (a refcount bump, the same hot-path cost as cloning the trace
+span). `Arc<str>` over a 128-bit id because a trigger routinely *adopts* an
+existing string id — an external request/trace id, a parent run's id (`From<&str>`
+/ `From<String>`) — which a `u128` could not hold; `CorrelationId::new()` mints a
+fresh process-unique id from a monotonic counter when there's nothing to adopt.
+The current correlation rides a `tokio::task_local!` set by the runtime around
+each `handle`, and `Delivery::new` captures it exactly as it captures
+`Span::current()` (the trigger overrides with `Delivery::with_correlation`).
 
 ## Alternatives considered
 

@@ -10,8 +10,10 @@
 //! does (complete/fail a job, or fold into health counters) is the ack's
 //! concern, not the runner's.
 
+mod correlation;
 mod delivery;
 mod mailbox;
 
+pub use correlation::CorrelationId;
 pub use delivery::{Ack, Delivery, Health, Outcome};
 pub use mailbox::{MailboxRx, MailboxTx, Offer, WeakMailboxTx, mailbox};

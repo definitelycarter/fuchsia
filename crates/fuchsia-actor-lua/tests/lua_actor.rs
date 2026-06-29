@@ -11,6 +11,7 @@ use fuchsia_actor::{
   MessageValue, async_trait,
 };
 use fuchsia_actor_lua::{BaseLuaHost, LuaActorCreator};
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::Engine;
 use tokio::sync::Notify;
 
@@ -115,7 +116,11 @@ async fn lua_script_echoes_through_a_provisioned_graph() {
     .expect("add edge");
 
   engine
-    .push(&lua_id, Message::json("test", serde_json::json!(42)))
+    .push(
+      &lua_id,
+      Message::json("test", serde_json::json!(42)),
+      CorrelationId::new(),
+    )
     .expect("push");
 
   tokio::time::timeout(Duration::from_secs(5), notify.notified())
@@ -219,7 +224,11 @@ async fn lua_emit_to_routes_per_named_port() {
 
   // 42 > 30 → the "hot" port only.
   engine
-    .push(&lua_id, Message::json("reading", serde_json::json!(42)))
+    .push(
+      &lua_id,
+      Message::json("reading", serde_json::json!(42)),
+      CorrelationId::new(),
+    )
     .expect("push");
 
   tokio::time::timeout(Duration::from_secs(5), hot_notify.notified())
@@ -228,4 +237,143 @@ async fn lua_emit_to_routes_per_named_port() {
 
   assert_eq!(hot.lock().expect("hot lock").len(), 1);
   assert!(cold.lock().expect("cold lock").is_empty());
+}
+
+/// A script that *reads* `ctx.execution_id` and emits it back in the payload —
+/// proof a guest can see the run id. It never threads the id onto the emission;
+/// the host stamps that automatically.
+const EXEC_SCRIPT: &str = r#"
+function handle(ctx, msg)
+  emit({
+    type = "seen",
+    value = {
+      kind = "json",
+      data = string.format('{"exec": "%s"}', ctx.execution_id)
+    }
+  })
+end
+"#;
+
+/// Recorder that captures the run id (`ctx.execution_id`) it was handed, so a
+/// test can assert the *host* propagated the guest's emission under the same id.
+struct ExecRecorder {
+  exec_ids: Arc<Mutex<Vec<String>>>,
+  out: Arc<Mutex<Vec<Message>>>,
+  notify: Arc<Notify>,
+}
+
+#[async_trait]
+impl Actor for ExecRecorder {
+  async fn setup(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    Ok(())
+  }
+  async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
+    self
+      .exec_ids
+      .lock()
+      .expect("exec lock")
+      .push(ctx.execution_id.clone());
+    self.out.lock().expect("out lock").push(msg);
+    self.notify.notify_one();
+    Ok(())
+  }
+  async fn teardown(&mut self, _ctx: &ActorContext) -> Result<(), ActorError> {
+    Ok(())
+  }
+}
+
+struct ExecRecorderCreator {
+  exec_ids: Arc<Mutex<Vec<String>>>,
+  out: Arc<Mutex<Vec<Message>>>,
+  notify: Arc<Notify>,
+}
+
+impl ActorCreator for ExecRecorderCreator {
+  fn create(
+    &self,
+    _config: &ActorConfig,
+    _caps: &ActorCapabilities,
+  ) -> Result<Box<dyn Actor>, ActorError> {
+    Ok(Box::new(ExecRecorder {
+      exec_ids: self.exec_ids.clone(),
+      out: self.out.clone(),
+      notify: self.notify.clone(),
+    }))
+  }
+}
+
+#[tokio::test]
+async fn lua_guest_reads_the_run_correlation_id() {
+  let creator = LuaActorCreator::new(BaseLuaHost::new()).with_source("exec", EXEC_SCRIPT);
+
+  let exec_ids = Arc::new(Mutex::new(Vec::new()));
+  let out = Arc::new(Mutex::new(Vec::new()));
+  let notify = Arc::new(Notify::new());
+
+  let engine = Engine::new();
+  engine.register("lua", creator).await;
+  engine
+    .register(
+      "recorder",
+      ExecRecorderCreator {
+        exec_ids: exec_ids.clone(),
+        out: out.clone(),
+        notify: notify.clone(),
+      },
+    )
+    .await;
+
+  let lua_id = ActorId::scoped("wf", "lua");
+  let rec_id = ActorId::scoped("wf", "rec");
+
+  let mut env = std::collections::BTreeMap::new();
+  env.insert("component".to_owned(), "exec".to_owned());
+  let lua_cfg = ActorConfig {
+    env,
+    settings: Default::default(),
+  };
+
+  engine
+    .add_node(lua_id.clone(), "lua", &lua_cfg, ActorCapabilities::new())
+    .await
+    .expect("add lua node");
+  engine
+    .add_node(
+      rec_id.clone(),
+      "recorder",
+      &ActorConfig::default(),
+      ActorCapabilities::new(),
+    )
+    .await
+    .expect("add recorder node");
+  engine
+    .add_default_edge(lua_id.clone(), rec_id.clone())
+    .expect("add edge");
+
+  // Mint the run id at the trigger.
+  engine
+    .push(
+      &lua_id,
+      Message::empty("go"),
+      CorrelationId::from("run-lua"),
+    )
+    .expect("push");
+
+  tokio::time::timeout(Duration::from_secs(5), notify.notified())
+    .await
+    .expect("recorder received the guest's emission");
+
+  // The guest *read* the right run id (it's in the payload it emitted)…
+  let recorded = out.lock().expect("out lock");
+  let MessageValue::Json(v) = &recorded[0].value else {
+    panic!("expected json message, got {:?}", recorded[0].value);
+  };
+  assert_eq!(v["exec"], serde_json::json!("run-lua"));
+
+  // …and the host propagated that emission under the same run id, with the guest
+  // never threading it onto the message itself.
+  assert_eq!(
+    *exec_ids.lock().expect("exec lock"),
+    vec!["run-lua".to_owned()]
+  );
 }

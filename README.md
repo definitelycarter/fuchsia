@@ -59,7 +59,7 @@ use std::collections::BTreeMap;
 use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorId, Message, COMPONENT_ENV_KEY};
 use fuchsia_actor_builtins::DedupCreator;
 use fuchsia_actor_wasm::{BaseHost, WasmActorCreator};
-use fuchsia_engine::Engine;
+use fuchsia_engine::{CorrelationId, Engine};
 use serde_json::json;
 
 #[tokio::main]
@@ -82,7 +82,8 @@ async fn main() -> anyhow::Result<()> {
     engine.add_node(echo.clone(),  "wasm",  &echo_cfg,               ActorCapabilities::new()).await?;
     engine.add_default_edge(dedup.clone(), echo.clone())?;  // or add_edge(from, port, to) for a named port
 
-    engine.push(&dedup, Message::json("reading", json!(42)))?;
+    // The trigger mints the run's correlation id; it rides every hop automatically.
+    engine.push(&dedup, Message::json("reading", json!(42)), CorrelationId::new())?;
     Ok(())
 }
 ```

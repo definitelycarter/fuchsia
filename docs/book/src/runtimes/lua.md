@@ -61,7 +61,8 @@ function setup(ctx)        -- optional; runs once before the first message
 end
 
 function handle(ctx, msg)
-  -- ctx: { execution_id, node_id, task_id }
+  -- ctx: { execution_id, node_id, task_id } — execution_id is the run's
+  --   correlation id (set by the host; the script reads it, never threads it)
   -- msg: { type = "...", value = { kind = "json"|"binary"|"empty", data = ... } }
   emit({                              -- default "out" port
     type = "processed",

@@ -16,6 +16,7 @@ use fuchsia_actor::{
   MessageValue, async_trait,
 };
 use fuchsia_actor_wasm::{BaseHost, WasmActorCreator};
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::Engine;
 use tokio::sync::Notify;
 
@@ -126,7 +127,11 @@ async fn wasm_component_echoes_through_a_provisioned_graph() {
 
   // Push a message into the wasm node; it echoes onward to the recorder.
   engine
-    .push(&wasm_id, Message::json("test", serde_json::json!(42)))
+    .push(
+      &wasm_id,
+      Message::json("test", serde_json::json!(42)),
+      CorrelationId::new(),
+    )
     .expect("push");
 
   tokio::time::timeout(Duration::from_secs(5), notify.notified())

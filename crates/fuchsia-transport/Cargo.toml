@@ -6,7 +6,9 @@ description = "Message delivery plumbing (Delivery, Ack, mailbox channel) for fu
 
 [dependencies]
 fuchsia-actor = { path = "../fuchsia-actor" }
-tokio       = { version = "1", features = ["sync"] }
+# `rt` for `tokio::task_local!` — the current-correlation task-local that rides
+# each delivery (the analog of the tracing span's task-local).
+tokio       = { version = "1", features = ["rt", "sync"] }
 tracing     = "0.1"
 
 [dev-dependencies]

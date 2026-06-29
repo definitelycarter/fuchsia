@@ -33,7 +33,7 @@ use fuchsia_actor::{
 use fuchsia_actor_builtins::DedupCreator;
 use fuchsia_actor_lua::{BaseLuaHost, LuaActorCreator};
 use fuchsia_actor_wasm::{BaseHost, WasmActorCreator};
-use fuchsia_engine::Engine;
+use fuchsia_engine::{CorrelationId, Engine};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 const ECHO_WASM: &str = concat!(
@@ -186,10 +186,13 @@ async fn main() {
   let readings = [20, 20, 25];
   println!("pushing readings: {readings:?}  (the repeated 20 should be deduped)\n");
   for celsius in readings {
+    // Each reading is its own run — mint a fresh correlation id at the trigger;
+    // it rides automatically through convert → dedup → wrap → out.
     engine
       .push(
         &convert,
         Message::json("celsius", serde_json::json!(celsius)),
+        CorrelationId::new(),
       )
       .expect("push reading");
   }

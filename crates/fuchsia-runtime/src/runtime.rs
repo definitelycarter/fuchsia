@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorFactory, ActorId,
@@ -212,6 +213,7 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
       msg,
       ack,
       span: parent,
+      correlation,
     } = delivery;
     // The handle span is a child of the upstream's span (carried on the
     // delivery), so a trace follows the message across this mailbox hop. The
@@ -219,13 +221,32 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
     // it's off the hot path unless tracing is turned up.
     let span =
       tracing::debug_span!(parent: &parent, "actor.handle", node = %ctx.node_id, kind = %msg.type_);
-    // `.instrument(span).await` enters the span for the duration of the async
-    // handle without holding a `!Send` span guard across the await point.
-    let outcome = actor.handle(&ctx, msg).instrument(span).await;
+
+    // Build a **per-delivery** context, finally giving the three id fields
+    // distinct meanings: `node_id` static (which actor — cloned from the stable
+    // spawn-time id), `execution_id` the run this message belongs to (the
+    // delivery's correlation), `task_id` this handling (a fresh per-message id).
+    // This is the one behavior change — context is per-delivery, not per-actor.
+    let msg_ctx = ActorContext::new(correlation.to_string(), ctx.node_id.clone(), next_task_id());
+
+    // Enter the correlation for the handle — a task-local mirroring the span, so
+    // emits the actor makes inside `handle` capture this run id and propagate it
+    // onward. `.instrument(span).await` enters the span for the duration of the
+    // async handle without holding a `!Send` span guard across the await point.
+    let outcome = correlation
+      .scope(actor.handle(&msg_ctx, msg).instrument(span))
+      .await;
     ack.report(outcome);
   }
 
   let _ = actor.teardown(&ctx).await;
+}
+
+/// A fresh, process-unique task id for one `handle` invocation. Monotonic, so
+/// each message's `task_id` is distinct.
+fn next_task_id() -> String {
+  static NEXT: AtomicU64 = AtomicU64::new(1);
+  format!("task-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 #[cfg(test)]

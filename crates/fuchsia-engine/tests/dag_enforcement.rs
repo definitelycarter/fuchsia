@@ -9,7 +9,7 @@ use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Emit,
   Message, async_trait,
 };
-use fuchsia_engine::{Engine, EngineError};
+use fuchsia_engine::{CorrelationId, Engine, EngineError};
 
 // ---- A Dynamic source that re-emits each input on the port named by its type
 //
@@ -137,7 +137,11 @@ async fn back_edge_closing_a_cycle_is_rejected_and_graph_unchanged() {
   // that `c` still routes nowhere new (no edge c -> a was recorded). `c`'s emit
   // on "out" must be a no-route, not a delivery.
   engine
-    .push(&ActorId::new("a"), Message::empty("out"))
+    .push(
+      &ActorId::new("a"),
+      Message::empty("out"),
+      CorrelationId::new(),
+    )
     .unwrap();
 
   // Poll `c`'s "out" counter until its emission is recorded (bounded so a

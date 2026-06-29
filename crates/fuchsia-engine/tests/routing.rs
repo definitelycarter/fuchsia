@@ -5,6 +5,7 @@ use fuchsia_actor::{
   async_trait,
 };
 use fuchsia_actor_builtins::PassthroughCreator;
+use fuchsia_engine::CorrelationId;
 use fuchsia_engine::Engine;
 use tokio::sync::Notify;
 
@@ -88,7 +89,11 @@ async fn message_routes_through_two_nodes() {
     .unwrap();
 
   engine
-    .push(&ActorId::new("a"), Message::empty("ping"))
+    .push(
+      &ActorId::new("a"),
+      Message::empty("ping"),
+      CorrelationId::new(),
+    )
     .unwrap();
 
   notify.notified().await;
@@ -140,7 +145,11 @@ async fn engine_is_shareable_across_tasks() {
   let pusher = engine.clone();
   tokio::spawn(async move {
     pusher
-      .push(&ActorId::new("a"), Message::empty("ping"))
+      .push(
+        &ActorId::new("a"),
+        Message::empty("ping"),
+        CorrelationId::new(),
+      )
       .unwrap();
   })
   .await
@@ -166,7 +175,11 @@ async fn entrypoint_with_no_edges_is_a_dead_end() {
 
   // No edges; pushing succeeds and the emission goes nowhere.
   engine
-    .push(&ActorId::new("solo"), Message::empty("ping"))
+    .push(
+      &ActorId::new("solo"),
+      Message::empty("ping"),
+      CorrelationId::new(),
+    )
     .unwrap();
 }
 
@@ -174,7 +187,11 @@ async fn entrypoint_with_no_edges_is_a_dead_end() {
 async fn push_to_unknown_node_errors() {
   let engine = Engine::new();
   let err = engine
-    .push(&ActorId::new("missing"), Message::empty("ping"))
+    .push(
+      &ActorId::new("missing"),
+      Message::empty("ping"),
+      CorrelationId::new(),
+    )
     .unwrap_err();
   assert!(matches!(err, fuchsia_engine::EngineError::NotFound(_)));
 }

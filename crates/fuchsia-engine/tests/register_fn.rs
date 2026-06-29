@@ -10,7 +10,7 @@ use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId,
   FnCreator, Message, async_trait, from_fn, from_fn_with_state,
 };
-use fuchsia_engine::Engine;
+use fuchsia_engine::{CorrelationId, Engine};
 use tokio::sync::Notify;
 
 /// A recorder sink node, so a test can observe what routed downstream.
@@ -106,9 +106,13 @@ async fn stateful_closure_node_routes_through_the_engine() {
 
   // Two inputs → two emissions on "out", routed to the recorder, carrying the
   // accumulated state (1 then 2).
-  engine.push(&counter, Message::empty("tick")).unwrap();
+  engine
+    .push(&counter, Message::empty("tick"), CorrelationId::new())
+    .unwrap();
   notify.notified().await;
-  engine.push(&counter, Message::empty("tick")).unwrap();
+  engine
+    .push(&counter, Message::empty("tick"), CorrelationId::new())
+    .unwrap();
   notify.notified().await;
 
   let out = recorded.lock().unwrap();
@@ -190,7 +194,9 @@ async fn fixed_port_closure_node_routes_and_validates_edges() {
   engine
     .add_edge(split.clone(), "left", sink.clone())
     .unwrap();
-  engine.push(&split, Message::empty("x")).unwrap();
+  engine
+    .push(&split, Message::empty("x"), CorrelationId::new())
+    .unwrap();
   notify.notified().await;
   assert_eq!(recorded.lock().unwrap().len(), 1);
   assert_eq!(engine.route_counts(&split, "left").unwrap().delivered, 1);
