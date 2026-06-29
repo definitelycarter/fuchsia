@@ -1,18 +1,25 @@
 //! Native builtin actors for fuchsia.
 //!
 //! These are plain Rust `Actor` impls — no WASM or Lua in the mix — registered
-//! into an `ActorFactory` under canonical type names: `passthrough` plus the
-//! generic conditioning operators (`debounce` / `deadband` / `dedup`).
+//! into an `ActorFactory` under canonical type names: `passthrough`, the
+//! generic conditioning operators (`debounce` / `deadband` / `dedup`), and the
+//! branching nodes (`if` / `switch`) that route over *named output ports*.
 
+mod condition;
 mod deadband;
 mod debounce;
 mod dedup;
+mod if_;
 mod passthrough;
+mod switch;
 
+pub use condition::{Condition, DeclCondition, Op, PreparedCondition};
 pub use deadband::{Deadband, DeadbandCreator};
 pub use debounce::{Debounce, DebounceCreator};
 pub use dedup::{Dedup, DedupCreator};
+pub use if_::{If, IfCreator};
 pub use passthrough::{Passthrough, PassthroughCreator};
+pub use switch::{Switch, SwitchCreator};
 
 use bson::Document;
 use fuchsia_actor::{ActorError, ActorFactory};
@@ -24,6 +31,8 @@ pub fn register(factory: &mut ActorFactory) {
   factory.register("debounce", DebounceCreator);
   factory.register("deadband", DeadbandCreator);
   factory.register("dedup", DedupCreator);
+  factory.register("if", IfCreator);
+  factory.register("switch", SwitchCreator);
 }
 
 /// Deserialize an operator's typed config from a node's opaque `settings`
@@ -43,7 +52,14 @@ mod tests {
   fn register_wires_every_builtin() {
     let mut factory = ActorFactory::new();
     register(&mut factory);
-    for name in ["passthrough", "debounce", "deadband", "dedup"] {
+    for name in [
+      "passthrough",
+      "debounce",
+      "deadband",
+      "dedup",
+      "if",
+      "switch",
+    ] {
       assert!(factory.contains(name), "missing builtin: {name}");
     }
     // Passthrough needs no config, so it's the one we can construct here; the

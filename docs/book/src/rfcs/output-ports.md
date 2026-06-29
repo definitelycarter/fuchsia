@@ -1,7 +1,12 @@
 # RFC: Named Output Ports
 
-> **Status: proposed.** Tracked in the [roadmap](../reference/roadmap.md#features)
-> Features table until it lands.
+> **Status: implemented.** Shipped end to end: the `Emit::emit_to` contract +
+> `ActorCreator::output_ports`, the engine's nested per-port edge table with
+> `add_edge(from, port, to)` validation (`EngineError::UnknownPort`) and
+> per-`(node, port)` route counters, the `send-to` WIT import wired through the
+> wasm/lua hosts, and the `if` / `switch` builtins over a `Condition` enum
+> (declarative `field`/`op`/`value` with `all`/`any`, plus the minijinja `expr`
+> arm). Stands as the durable design record.
 
 ## Concept
 
@@ -81,18 +86,28 @@ pub trait Emit: Send + Sync {
 }
 ```
 
-**`fuchsia-engine` (router).** Key edges by `(source, port)` instead of `source`:
+**`fuchsia-engine` (router).** Key edges by source node, then by port — a *nested*
+map so the hot path probes the inner map by `&str` with no per-emit allocation (a
+flat `(ActorId, Port)` tuple key can't be looked up from `(&ActorId, &str)` without
+constructing the owned key each time):
 
 ```rust
 // was: edges: HashMap<ActorId, Vec<ActorId>>
-edges: HashMap<(ActorId, Port), Vec<ActorId>>,   // Port = String (or Arc<str>)
+edges: HashMap<ActorId, HashMap<Port, Vec<ActorId>>>,   // Port = String; see Decisions
 ```
 
 `add_edge` gains a port (`add_edge(from, "true", to)`); `route(source, port, msg)`
-looks up `(source, port)`'s successors and offers to each — a port may still have
-*multiple* successors, so fan-out *within* a port is preserved. `RoutedEmit`
-implements `emit_to` by passing its `source` plus the port into `route`.
-`remove_graph(group)` still removes by source group, so teardown is unaffected.
+looks up `source`'s inner map, then `port`'s successors, and offers to each — a port
+may still have *multiple* successors, so fan-out *within* a port is preserved.
+`RoutedEmit` implements `emit_to` by passing its `source` plus the port into `route`.
+`remove_graph(group)` still removes by source group (dropping each node's whole inner
+map), so teardown is unaffected.
+
+Two things ride along on the router, both decided below (see [Decisions](#decisions)):
+`add_edge` **validates** the source port against the node's declared output ports —
+rejecting a typo'd or non-existent port up front — and every `route` call records its
+outcome (`delivered` / `shed` / `no-route`) on a per-`(node, port)` counter, so *no*
+routing outcome — including an emit to an unwired port — is silent.
 
 **`wit` (guest contract).** `emit.wit` gains the port, additively:
 
@@ -126,25 +141,37 @@ author drops an `if` node into the graph, fills in its condition, and wires its
 { "field": "temp", "op": "gt", "value": 30 }
 ```
 
-The open decision is **how expressive that config is** — a spectrum, not a binary:
+How expressive that config is is **not one choice** — the two target products want
+different shapes, so the predicate is a `Condition` enum and a product picks the arm.
+Declarative needs no tag (it's the common case); an `expr` key selects the expression
+arm:
 
-- **Declarative conditions (recommended default).** A small schema the `if`/`switch`
+```rust
+#[serde(untagged)]
+enum Condition {
+    Expr { expr: String },       // a minijinja expression, e.g. "temp > 30"
+    Declarative(DeclCondition),  // { field, op, value }, with all/any groups
+}
+```
+
+- **Declarative conditions (the tagless default).** A small schema the `if`/`switch`
   builtins interpret: `field` / `op` / `value`, combinable with `all`/`any` groups.
-  Pure data, no embedded language. Covers the overwhelming majority — it is exactly
-  n8n's IF condition rows and Home Assistant's `numeric_state`/`state` conditions.
-- **An expression string (optional middle tier).** `{ "expr": "temp > 30" }`,
-  evaluated by an embedded mini-language (JSONLogic, CEL, or a crate like
-  `evalexpr`). Still configuration — a string — with more power, but it brings an
-  evaluator and a syntax to learn. A later addition if declarative conditions prove
-  too limiting.
+  Pure data, no embedded language — exactly Home Assistant's `numeric_state`/`state`
+  conditions and n8n's IF condition rows. `{ "field": "temp", "op": "gt", "value": 30 }`.
+- **An expression string — `{ "expr": "temp > 30" }`.** Evaluated by
+  [minijinja](https://docs.rs/minijinja) (`compile_expression` over the payload as
+  context) — the n8n-style `{{ … }}` expression path. More power, a syntax to learn,
+  one new dependency and a payload→context shim.
 - **A script node (the escape hatch).** When logic is genuinely arbitrary, the
   author uses a Lua/JS node that calls `emit_to("true"/"false", …)` itself. Logic as
-  code, *by choice* — not the default path.
+  code, *by choice* — not a `Condition` at all.
 
-The runtime already supports all three (settings-driven builtins + script actors);
-the choice is only which the *first-party* `if`/`switch` ship with. This RFC
-proposes the **declarative** default with the script node as the escape hatch, and
-defers the expression tier.
+Both `Condition` arms ship: the **declarative** arm covers the Home Assistant path
+and lands first; the **`expr`/minijinja** arm covers the n8n path and lands as its
+own phase behind the same enum — one match arm and a crate, not a re-design. The enum
+itself is the load-bearing decision; shipping only declarative *without* it would
+force exactly that re-design later. The script node remains the escape hatch for
+genuinely arbitrary logic. See [Decisions](#decisions).
 
 ### What configures a node's ports
 
@@ -165,12 +192,25 @@ interface. Two things are easy to conflate:
   leaves from — `add_edge(from, "true", to)`; an omitted port means `"out"`. Port
   *selection* happens at the source end of an edge; the node never names a peer.
 
-The engine needs no port *declaration* to run: routing is a `(node, port) →
-successors` lookup, and emitting on an unwired port is a no-op. A declaration — a
-node type advertising its ports, computed from type + config — is only for
-**authoring/validation**, so a graph editor can render the outputs and reject an
-edge from a port that doesn't exist (the "port declaration / validation" open
-question below).
+The engine does not *need* a declaration to route — routing is a `(node, port) →
+successors` lookup. But a declaration earns its keep for **authoring and
+validation**, and this RFC ships one (see [Decisions](#decisions)): an `ActorCreator`
+advertises its output ports, computed from type + config, via
+`fn output_ports(&self, config) -> OutputPorts` —
+
+- `Fixed(Vec<String>)` — `if` → `["true", "false"]`, `passthrough` → `["out"]`; the
+  config-*derived* case is the same variant computed from settings (`switch` → its
+  `cases` + `["default"]`).
+- `Dynamic` — a Lua/Wasm/JS script node, whose ports exist only at emit time and so
+  *cannot* be validated. The honest answer for guests, not a gap.
+
+The default method returns `Dynamic`, so every existing creator compiles unchanged.
+`add_edge` looks the source node's declaration up and rejects an edge from a port a
+`Fixed` node lacks (`EngineError::UnknownPort`) — `"out"` is always allowed and
+`"error"` is reserved, so the error-branch wiring from
+[node failure handling](./node-failure-handling.md) never trips validation; `Dynamic`
+nodes accept any port. A graph editor reads the same declaration to draw a node's
+outputs.
 
 The serialized graph that carries these edges (with their `from_port`) is a
 *product* concern: `fuchsia-engine` exposes only `add_node` /
@@ -280,25 +320,32 @@ So the two compose: a node can *choose* a port (branch) **and** that port can ha
 several edges (fan-out). Today's behavior is the special case "one port (`out`),
 many edges."
 
-**Looping — expressible, with a caveat.** A loop is a back-edge, and the routing
-table is a lookup (not baked wiring), so a cycle is representable. Ports supply the
-*control flow* a loop needs — a body that ends in a branch deciding "go round again"
-vs "exit":
+**Looping — a *node*, not a graph cycle.** It is tempting to read a loop as a
+back-edge (`done?` → `step`); because the routing table is a lookup, the engine
+*could* record one. We deliberately don't. [DAG enforcement](./dag-enforcement.md)
+rejects any cycle-creating edge: a graph cycle has no node whose upstreams ever
+clear, which breaks graceful-shutdown's topological drain and lets a tight loop shed
+its own iterations on a full mailbox. The parent graph stays acyclic.
+
+Iteration instead belongs to a **loop node over a sub-graph** — a node that owns its
+counter and drives a body, exactly as n8n (its Loop / Split-In-Batches node) and Home
+Assistant (a `repeat` action) model it. Ports are *necessary but not sufficient*:
+they give the loop body its `continue` / `done` branch, but the loop itself is the
+node's construct, not an engine back-edge.
 
 ```mermaid
 flowchart LR
-    S["seed"] --> STEP["step"]
-    STEP --> G{"if: done?"}
-    G -->|continue| STEP
-    G -->|done| OUT["result"]
+    S["seed"] --> LOOP["loop node — owns iteration"]
+    LOOP -->|each| BODY["body sub-graph"]
+    LOOP -->|done| OUT["result"]
+    BODY -. "node-owned re-entry, not an engine edge" .-> LOOP
 ```
 
-Ports make the loop *shape* clean, but they do **not** define loop *semantics* —
-termination, and what happens when a loop saturates a mailbox (routing sheds on a
-full mailbox, so a tight loop can drop its own iterations). Defined back-edge
-behavior is a separate concern, already tracked as the
-[cycle-support roadmap gap](../reference/roadmap.md#fuchsia-engine). Ports are
-necessary for controlled loops; they are not sufficient on their own.
+So ports give a loop its control flow *without* themselves making the graph cyclic.
+The mechanism — a node-invoked sub-graph, or a single bounded back-edge into a loop
+node as a sanctioned exception to DAG enforcement — is the **loop-node design's**
+call, interacting with [DAG enforcement](./dag-enforcement.md), and is out of scope
+here.
 
 **Merging — orthogonal; it's an input-side property.** Fan-in already works: several
 nodes share one successor and its single mailbox interleaves their emissions in
@@ -312,12 +359,17 @@ flowchart LR
     C["source C"] --> M
 ```
 
-The open question merging raises is the **dual** of this RFC: a true join/merge node
-("combine input 1 with input 2") needs to tell its *inputs* apart, which means named
-**input** ports — multiple mailboxes, or a tag on the delivery saying which input it
-arrived on. A node has exactly one mailbox today, so inputs are indistinguishable
-except by message `%type` or content. Named input ports are a plausible follow-up;
-this RFC deliberately scopes to *outputs* only.
+The **dual** of this RFC is a true join/merge node ("combine input 1 with input 2"),
+which needs to tell its *inputs* apart — named **input** ports: multiple mailboxes,
+or a tag on the delivery saying which input it arrived on. A node has exactly one
+mailbox today, so inputs are indistinguishable except by message `%type` or content.
+This RFC scopes to *outputs* only, but deliberately keeps that door open (see
+[Decisions](#decisions)): an edge is represented as a **named struct**, not a bare
+`ActorId` successor, so a `to_port` field is a non-breaking addition later, and
+nothing asserts a node has exactly one untagged input — `Delivery` stays open to a
+later input-port tag. The symmetry is the point: an output port is source-side
+selection on an edge; an input port is dest-side selection on the *same* edge plus a
+tag on the delivery.
 
 ## Alternatives considered
 
@@ -339,26 +391,59 @@ this RFC deliberately scopes to *outputs* only.
 ## Migration
 
 The default `"out"` port keeps every existing actor, guest, and graph working
-unchanged. `add_edge(from, to)` can remain as a convenience forwarding to
-`add_edge(from, "out", to)`. The only new surface is the `Emit` trait gaining a
-method (with a default body) and `emit.wit` gaining `send-to` (additive) — no
-breakage.
+unchanged. `add_edge` gains the port argument; a two-arg convenience forwarding to
+`add_edge(from, "out", to)` keeps existing call sites terse. The rest of the new
+surface is additive or defaulted: the `Emit` trait gains a method with a default
+body; `emit.wit` gains `send-to`; `ActorCreator` gains `output_ports` defaulting to
+`Dynamic` (so every existing creator compiles untouched); and `add_edge` gains one
+new failure case, `EngineError::UnknownPort`, alongside the `EngineError::Cycle` that
+[DAG enforcement](./dag-enforcement.md) adds — both on a call that already returns
+`Result`. No breakage.
 
-## Open questions
+## Decisions
 
-- **Port identity type** — `String` vs `Arc<str>` on the hot routing path (ties to
-  the `ActorContext` id-as-`Arc<str>` open question already in the roadmap).
-- **Port declaration / validation** — ports are implicit today (whatever a node
-  emits). Should a node *advertise* its output ports, so a graph editor can draw
-  them and reject an edge from a non-existent port? Likely yes for a workflow
-  editor; deferred.
-- **Unwired-port semantics** — emitting on a port with no edges is a silent no-op
-  (consistent with today's no-successor case). Should that be observable (a
-  counter), to catch mis-wired graphs?
-- **Named *input* ports** — the merge/join dual above. Out of scope here, but worth
-  deciding before building a join node, since it touches the mailbox model.
-- **Loop semantics** — ports express loop *shape*, but termination and back-edge
-  shedding behavior remain open (see the cycle-support roadmap gap).
-- **Predicate representation** — ship the `if`/`switch` builtins with declarative
-  conditions only, or include an expression tier (JSONLogic/CEL) from the start?
-  (See "Where the predicate lives" above.)
+Review's open questions are resolved as follows; the design above reflects them.
+
+- **Port identity type → `String`, with a nested edge map.** The port label rides in
+  the edge table, written once at `add_edge` and only *borrowed* on the emit path, so
+  it is never cloned per message — `Arc<str>` buys nothing here. What matters is not
+  allocating to *look it up*, so the table is
+  `HashMap<ActorId, HashMap<String, Vec<ActorId>>>` (the inner map probes by `&str`),
+  not a `(ActorId, Port)` tuple key. Stays compatible with the separate roadmap
+  question of making *ids* `Arc<str>`.
+- **Port declaration → yes, on `ActorCreator`, validated in the engine.**
+  `fn output_ports(&self, config) -> OutputPorts` (`Fixed(Vec<String>)` / `Dynamic`,
+  default `Dynamic`); the engine stores it per node at `add_node`, and `add_edge`
+  rejects an edge from a port a `Fixed` node lacks (`EngineError::UnknownPort`).
+  `"out"` is always allowed; `"error"` is reserved for the failure-handling branch.
+  Guests are `Dynamic` (ports exist only at emit time). Richer editor schema (port
+  labels/types) is still deferred — names ship now.
+- **Unwired-port / routing observability → solved uniformly in the engine.** Not a
+  special case: every `route` outcome is bucketed on a per-`(node, port)` counter —
+  `delivered` / `shed` (full mailbox) / `no-route` (no edge, including an unwired
+  port). Counters only in this RFC, not an event stream; the closed-target bucket is
+  reconciled by [node failure handling](./node-failure-handling.md)'s death detection.
+- **Named input ports → out of scope, flexibility preserved.** Outputs only now, but
+  an edge is a named struct (not a bare successor) so `to_port` is additive later, and
+  `Delivery` stays open to an input-port tag. The join/merge node is future work.
+- **Loop semantics → no graph cycle; loop is a node.** The parent graph stays acyclic
+  ([DAG enforcement](./dag-enforcement.md)); ports supply the loop's `continue`/`done`
+  branch, the iteration belongs to a loop node over a sub-graph. The mechanism
+  (node-invoked sub-graph vs a single sanctioned bounded back-edge) is the loop-node
+  design's call, deferred.
+- **Predicate representation → a `Condition` enum, both arms shipped.** Declarative
+  (`field`/`op`/`value` with `all`/`any`) for the Home Assistant path lands first; a
+  minijinja `expr` string for the n8n path lands as its own phase behind the same
+  enum. The enum is the load-bearing decision; only declarative-*without*-the-enum was
+  rejected. The script node stays the escape hatch.
+
+### Still open
+
+- **`UnknownPort` / `Cycle` error detail** — name just the offending edge, or the
+  full context (a `Fixed` node's available ports, the cycle path)? The richer form is
+  friendlier for a graph editor to surface; edge-only is the simpler default.
+- **`expr` evaluation context** — the exact payload→minijinja `Value` mapping (field
+  access, missing-field semantics, type coercion) is settled when the `expr` phase
+  lands.
+- **Routing counters' surface** — kept to in-process counters here; whether they
+  graduate to a metrics/trace export is a later observability decision.

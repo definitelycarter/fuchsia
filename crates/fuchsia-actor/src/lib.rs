@@ -3,8 +3,10 @@ mod error;
 mod factory;
 mod id;
 
-pub use actor::{Actor, ActorCapabilities, ActorContext, Emit, Message, MessageValue, Schedule};
+pub use actor::{
+  Actor, ActorCapabilities, ActorContext, DEFAULT_PORT, Emit, Message, MessageValue, Schedule,
+};
 pub use async_trait::async_trait;
 pub use error::ActorError;
-pub use factory::{ActorConfig, ActorCreator, ActorFactory, COMPONENT_ENV_KEY};
+pub use factory::{ActorConfig, ActorCreator, ActorFactory, COMPONENT_ENV_KEY, OutputPorts};
 pub use id::ActorId;

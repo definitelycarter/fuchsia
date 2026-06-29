@@ -43,6 +43,11 @@ pub struct BaseHostState {
 // ---- emit import: forward component emissions to the downstream sink -------
 
 impl fuchsia::actor::emit::Host for BaseHostState {
+  fn send_to(&mut self, port: String, msg: Payload) -> Result<(), String> {
+    self.emit.emit_to(&port, from_payload(msg)?);
+    Ok(())
+  }
+
   fn send(&mut self, msg: Payload) -> Result<(), String> {
     self.emit.emit(from_payload(msg)?);
     Ok(())

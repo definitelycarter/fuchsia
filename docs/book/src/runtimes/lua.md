@@ -63,9 +63,13 @@ end
 function handle(ctx, msg)
   -- ctx: { execution_id, node_id, task_id }
   -- msg: { type = "...", value = { kind = "json"|"binary"|"empty", data = ... } }
-  emit({
+  emit({                              -- default "out" port
     type = "processed",
     value = { kind = "json", data = '{"ok": true}' }
+  })
+  emit_to("true", {                   -- a named output port
+    type = "branch",
+    value = { kind = "empty" }
   })
 end
 
@@ -75,8 +79,11 @@ end
 
 Inbound messages arrive as a Lua table mirroring `MessageValue`: `kind` is
 `"json"` (with `data` the JSON text), `"binary"` (with `data` a Lua string of the
-bytes), or `"empty"`. Outbound emissions are the same shape, passed to `emit`,
-which the host converts to a `Message` before forwarding.
+bytes), or `"empty"`. Outbound emissions are the same shape, passed to `emit`
+(the default `"out"` port) or `emit_to(port, msg)` (a **named output port**),
+which the host converts to a `Message` before forwarding. Each emission reaches
+only the successors wired to its port (see
+[named output ports](../rfcs/output-ports.md)).
 
 ## Actor lifecycle
 
@@ -84,8 +91,8 @@ When the runtime builds and starts the actor:
 
 1. A fresh `mlua::Lua` is created (the `send` feature is on, so the VM is `Send`
    and moves into the actor's task).
-2. `host.populate(&lua, emit)` registers globals (`emit` for the base host; a
-   product host adds more).
+2. `host.populate(&lua, emit)` registers globals (`emit` / `emit_to` for the
+   base host; a product host adds more).
 3. The script source is loaded and executed, defining its functions and
    module-level state.
 4. The runtime verifies `handle` exists, then calls `setup(ctx)` if defined.

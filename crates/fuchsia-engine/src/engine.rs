@@ -1,12 +1,12 @@
 use std::sync::{Arc, RwLock};
 
-use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorCreator, ActorId, Message};
+use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorCreator, ActorId, Emit, Message};
 use fuchsia_runtime::Runtime;
 use fuchsia_transport::{Ack, Delivery, Outcome};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::error::EngineError;
-use crate::router::{RoutedEmit, RouterState};
+use crate::router::{RouteCounts, RoutedEmit, RouterState};
 
 /// Routes messages between actors according to a graph's edges.
 ///
@@ -66,7 +66,10 @@ impl Engine {
       runtime.prepare(id.clone(), type_name, config, caps)?
     };
     spawning.setup().await?;
-    let (mailbox, health) = {
+    // `commit` hands back the node's declared output ports (from its resolved
+    // creator) alongside the mailbox/health, so the router can store the
+    // declaration and validate edges against it at `add_edge`.
+    let (mailbox, health, output_ports) = {
       let mut runtime = self.runtime.lock().await;
       runtime.commit(spawning)?
     };
@@ -75,18 +78,82 @@ impl Engine {
       .router
       .write()
       .map_err(|_| EngineError::Lock)?
-      .register(id, mailbox, health);
+      .register(id, mailbox, health, output_ports);
     Ok(())
   }
 
-  /// Add a directed edge: `from`'s emissions flow to `to`'s mailbox.
-  pub fn add_edge(&self, from: ActorId, to: ActorId) -> Result<(), EngineError> {
+  /// Add a directed edge from `from`'s named output `port` to `to`'s mailbox.
+  /// Only emissions `from` makes *on that port* flow to `to`; a port may still
+  /// have several edges, so fan-out within a port is preserved.
+  ///
+  /// Rejects an edge whose `port` a [`Fixed`](fuchsia_actor::OutputPorts::Fixed)
+  /// source node does not declare ([`EngineError::UnknownPort`]); `"out"` is
+  /// always allowed and `"error"` is reserved. A
+  /// [`Dynamic`](fuchsia_actor::OutputPorts::Dynamic) source accepts any port.
+  pub fn add_edge(&self, from: ActorId, port: &str, to: ActorId) -> Result<(), EngineError> {
     self
       .router
       .write()
       .map_err(|_| EngineError::Lock)?
-      .add_edge(from, to);
-    Ok(())
+      .add_edge(from, port, to)
+  }
+
+  /// Add an edge from `from`'s default `"out"` port to `to` — the terse,
+  /// two-node form for the common single-output wiring. Equivalent to
+  /// `add_edge(from, "out", to)`.
+  pub fn add_default_edge(&self, from: ActorId, to: ActorId) -> Result<(), EngineError> {
+    self.add_edge(from, fuchsia_actor::DEFAULT_PORT, to)
+  }
+
+  /// Read the route-outcome counters for one `(node, port)` —
+  /// `delivered` / `shed` / `no_route`, zeroed if nothing has routed there yet.
+  /// In-process observability.
+  ///
+  /// Counters for a node's *declared* ports (a `Fixed` node's ports, plus the
+  /// always-emittable `"out"`/`"error"`) and any *wired* port are tracked
+  /// per-port. An emit on a port that was **neither declared nor wired** (only
+  /// possible on a `Dynamic` node) is still counted, but on the node's
+  /// per-node fallback — see [`route_counts_fallback`](Self::route_counts_fallback)
+  /// — so it reads as zero here. Nothing routes silently.
+  pub fn route_counts(&self, node: &ActorId, port: &str) -> Result<RouteCounts, EngineError> {
+    Ok(
+      self
+        .router
+        .read()
+        .map_err(|_| EngineError::Lock)?
+        .route_counts(node, port),
+    )
+  }
+
+  /// Read a node's per-node **fallback** route counters — the bucket for
+  /// emissions on a port that was neither declared nor wired. Zeroed for an
+  /// unknown node. In-process observability.
+  pub fn route_counts_fallback(&self, node: &ActorId) -> Result<RouteCounts, EngineError> {
+    Ok(
+      self
+        .router
+        .read()
+        .map_err(|_| EngineError::Lock)?
+        .route_counts_fallback(node),
+    )
+  }
+
+  /// The `emit` sink a node `source` was given — the same [`RoutedEmit`]
+  /// injected at `add_node`, addressing the live routing table. Calling
+  /// `.emit_to(port, msg)` on it runs exactly the routing hot path (`route` +
+  /// the per-port counter bump) *without* the actor task or the recv loop.
+  ///
+  /// Exposed only as a **benchmarking seam** — `#[doc(hidden)]`, not part of the
+  /// supported surface — so the routing path can be measured in isolation. The
+  /// node need not exist as a target; the sink simply routes from `source`'s id.
+  #[doc(hidden)]
+  pub fn emit_sink(&self, source: ActorId) -> Arc<dyn Emit> {
+    // Refcount bump on the shared router handle so the sink can outlive this
+    // call, matching how `add_node` builds a node's own `emit`.
+    Arc::new(RoutedEmit {
+      source,
+      router: Arc::clone(&self.router),
+    })
   }
 
   /// Tear down a whole graph: stop every actor in `group` and drop its edges.

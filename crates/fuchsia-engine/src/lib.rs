@@ -13,3 +13,4 @@ mod router;
 
 pub use engine::Engine;
 pub use error::EngineError;
+pub use router::RouteCounts;

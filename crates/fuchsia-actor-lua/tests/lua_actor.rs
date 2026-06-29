@@ -111,7 +111,7 @@ async fn lua_script_echoes_through_a_provisioned_graph() {
     .await
     .expect("add recorder node");
   engine
-    .add_edge(lua_id.clone(), rec_id.clone())
+    .add_default_edge(lua_id.clone(), rec_id.clone())
     .expect("add edge");
 
   engine
@@ -131,4 +131,101 @@ async fn lua_script_echoes_through_a_provisioned_graph() {
   assert_eq!(v["echoed"], serde_json::json!(42));
   assert_eq!(v["node"], serde_json::json!("wf/lua"));
   assert_eq!(recorded[0].type_, "echo");
+}
+
+/// A script that branches via the `emit_to(port, msg)` global: `>30` goes to
+/// the `"hot"` port, else `"cold"`.
+const BRANCH_SCRIPT: &str = r#"
+function handle(ctx, msg)
+  local temp = tonumber(msg.value.data)
+  if temp > 30 then
+    emit_to("hot", { type = "alert", value = { kind = "empty" } })
+  else
+    emit_to("cold", { type = "ok", value = { kind = "empty" } })
+  end
+end
+"#;
+
+#[tokio::test]
+async fn lua_emit_to_routes_per_named_port() {
+  let creator = LuaActorCreator::new(BaseLuaHost::new()).with_source("branch", BRANCH_SCRIPT);
+
+  let hot = Arc::new(Mutex::new(Vec::new()));
+  let cold = Arc::new(Mutex::new(Vec::new()));
+  let hot_notify = Arc::new(Notify::new());
+  let cold_notify = Arc::new(Notify::new());
+
+  let engine = Engine::new();
+  engine.register("lua", creator).await;
+  engine
+    .register(
+      "hot_rec",
+      RecorderCreator {
+        out: hot.clone(),
+        notify: hot_notify.clone(),
+      },
+    )
+    .await;
+  engine
+    .register(
+      "cold_rec",
+      RecorderCreator {
+        out: cold.clone(),
+        notify: cold_notify.clone(),
+      },
+    )
+    .await;
+
+  let lua_id = ActorId::scoped("wf", "branch");
+  let hot_id = ActorId::scoped("wf", "hot");
+  let cold_id = ActorId::scoped("wf", "cold");
+
+  let mut env = std::collections::BTreeMap::new();
+  env.insert("component".to_owned(), "branch".to_owned());
+  let lua_cfg = ActorConfig {
+    env,
+    settings: Default::default(),
+  };
+
+  engine
+    .add_node(lua_id.clone(), "lua", &lua_cfg, ActorCapabilities::new())
+    .await
+    .expect("add lua node");
+  engine
+    .add_node(
+      hot_id.clone(),
+      "hot_rec",
+      &ActorConfig::default(),
+      ActorCapabilities::new(),
+    )
+    .await
+    .expect("add hot recorder");
+  engine
+    .add_node(
+      cold_id.clone(),
+      "cold_rec",
+      &ActorConfig::default(),
+      ActorCapabilities::new(),
+    )
+    .await
+    .expect("add cold recorder");
+  // Lua is a Dynamic node, so its emit-time ports wire freely.
+  engine
+    .add_edge(lua_id.clone(), "hot", hot_id.clone())
+    .expect("edge hot");
+  engine
+    .add_edge(lua_id.clone(), "cold", cold_id.clone())
+    .expect("edge cold");
+
+  // 42 > 30 → the "hot" port only.
+  engine
+    .push(&lua_id, Message::json("reading", serde_json::json!(42)))
+    .expect("push");
+
+  tokio::time::timeout(Duration::from_secs(5), hot_notify.notified())
+    .await
+    .expect("hot recorder received");
+
+  assert_eq!(hot.lock().expect("hot lock").len(), 1);
+  assert!(cold.lock().expect("cold lock").is_empty());
 }

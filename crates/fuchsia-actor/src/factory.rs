@@ -30,6 +30,25 @@ pub struct ActorConfig {
   pub settings: Document,
 }
 
+/// The output ports a node advertises — its *interface*, computed from the
+/// node's type plus its config. Used by the engine to validate edges at wiring
+/// time and by an editor to draw a node's outputs.
+///
+/// A port is a named output *on* a node, not a node itself; the names ride on
+/// the edges that leave them. See the named-output-ports design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputPorts {
+  /// A fixed, declarable set of ports — `if` → `["true", "false"]`,
+  /// `passthrough` → `["out"]`; the config-*derived* case is the same variant
+  /// computed from settings (`switch` → its `cases` + `["default"]`). The
+  /// engine validates edges against this set.
+  Fixed(Vec<String>),
+  /// Ports that exist only at emit time and so cannot be validated — a
+  /// Lua/Wasm/JS script node, whose ports are whatever its code emits on. The
+  /// honest answer for guests, not a gap; the engine accepts any port.
+  Dynamic,
+}
+
 pub trait ActorCreator: Send + Sync + 'static {
   /// Build the actor, storing whatever subset of `caps` it uses. The signature
   /// is uniform (dyn-dispatched), so every creator is *offered* the full bundle
@@ -39,6 +58,14 @@ pub trait ActorCreator: Send + Sync + 'static {
     config: &ActorConfig,
     caps: &ActorCapabilities,
   ) -> Result<Box<dyn Actor>, ActorError>;
+
+  /// Advertise this node type's output ports for the given config. The default
+  /// is [`OutputPorts::Dynamic`] — ports validated nowhere — so every existing
+  /// creator compiles untouched; a node with a known, fixed interface (`if`,
+  /// `switch`, `passthrough`) overrides this to return [`OutputPorts::Fixed`].
+  fn output_ports(&self, _config: &ActorConfig) -> OutputPorts {
+    OutputPorts::Dynamic
+  }
 }
 
 pub struct ActorFactory {
@@ -67,6 +94,23 @@ impl ActorFactory {
       .get(type_name)
       .ok_or_else(|| ActorError::UnknownType(type_name.to_owned()))?
       .create(config, caps)
+  }
+
+  /// The output ports a registered type advertises for `config` — the engine
+  /// uses this to validate edges. Resolving the creator by name is the same
+  /// lookup [`create`](Self::create) does, so the two stay in lockstep.
+  pub fn output_ports(
+    &self,
+    type_name: &str,
+    config: &ActorConfig,
+  ) -> Result<OutputPorts, ActorError> {
+    Ok(
+      self
+        .creators
+        .get(type_name)
+        .ok_or_else(|| ActorError::UnknownType(type_name.to_owned()))?
+        .output_ports(config),
+    )
   }
 
   pub fn contains(&self, type_name: &str) -> bool {
@@ -144,5 +188,37 @@ mod tests {
     assert!(!factory.contains("echo"));
     factory.register("echo", EchoCreator);
     assert!(factory.contains("echo"));
+  }
+
+  #[test]
+  fn output_ports_defaults_to_dynamic() {
+    assert_eq!(
+      EchoCreator.output_ports(&ActorConfig::default()),
+      OutputPorts::Dynamic
+    );
+  }
+
+  struct FixedPortsCreator;
+
+  impl ActorCreator for FixedPortsCreator {
+    fn create(
+      &self,
+      _config: &ActorConfig,
+      _caps: &ActorCapabilities,
+    ) -> Result<Box<dyn Actor>, ActorError> {
+      Ok(Box::new(EchoActor))
+    }
+
+    fn output_ports(&self, _config: &ActorConfig) -> OutputPorts {
+      OutputPorts::Fixed(vec!["true".to_owned(), "false".to_owned()])
+    }
+  }
+
+  #[test]
+  fn output_ports_override_is_observed() {
+    assert_eq!(
+      FixedPortsCreator.output_ports(&ActorConfig::default()),
+      OutputPorts::Fixed(vec!["true".to_owned(), "false".to_owned()])
+    );
   }
 }

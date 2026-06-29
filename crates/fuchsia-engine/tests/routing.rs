@@ -84,7 +84,7 @@ async fn message_routes_through_two_nodes() {
     .await
     .unwrap();
   engine
-    .add_edge(ActorId::new("a"), ActorId::new("b"))
+    .add_default_edge(ActorId::new("a"), ActorId::new("b"))
     .unwrap();
 
   engine
@@ -133,7 +133,7 @@ async fn engine_is_shareable_across_tasks() {
     .await
     .unwrap();
   engine
-    .add_edge(ActorId::new("a"), ActorId::new("b"))
+    .add_default_edge(ActorId::new("a"), ActorId::new("b"))
     .unwrap();
 
   // A clone of the Arc pushes from a separate task — proves Engine is Send+Sync.

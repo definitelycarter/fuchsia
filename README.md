@@ -21,9 +21,10 @@ synchronous calls — no async bridge.
   `&mut self`). Graphs mix and match freely.
 - **Handle-per-message.** The runtime drives the loop and reports each outcome to
   the message's ack; per-actor state is just struct fields, no locking.
-- **Declarative routing.** Actors emit; the engine delivers to successors via a
-  live routing table, so graphs can be added or torn down without
-  re-instantiating the actors they share.
+- **Declarative routing.** Actors emit on a **named output port** (`"out"` by
+  default, or `"true"`/`"false"`/a case for branching); the engine delivers to
+  the successors wired to that port via a live routing table, so graphs can be
+  added or torn down without re-instantiating the actors they share.
 - **Capabilities, injected.** What an actor can do beyond receive-and-emit is a
   typed bag handed in at construction — `emit` (engine), `schedule` (a self-timer,
   runtime), `state` (a pre-scoped write sink, host). An actor's struct *is* the
@@ -45,8 +46,8 @@ Fuchsia is a library, not a CLI. Add the crates you need:
 ```toml
 [dependencies]
 fuchsia-actor          = { git = "..." }  # the Actor trait + capability bag + message types
-fuchsia-engine         = { git = "..." }  # routing: add_node / add_edge / push
-fuchsia-actor-builtins = { git = "..." }  # passthrough, debounce, deadband, dedup, commit
+fuchsia-engine         = { git = "..." }  # routing: add_node / add_edge(from, port, to) / push
+fuchsia-actor-builtins = { git = "..." }  # passthrough, debounce, deadband, dedup, if, switch
 fuchsia-actor-wasm     = { git = "..." }  # host Wasm component actors
 fuchsia-actor-lua      = { git = "..." }  # host Lua script actors
 ```
@@ -79,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
 
     engine.add_node(dedup.clone(), "dedup", &ActorConfig::default(), ActorCapabilities::new()).await?;
     engine.add_node(echo.clone(),  "wasm",  &echo_cfg,               ActorCapabilities::new()).await?;
-    engine.add_edge(dedup.clone(), echo.clone())?;
+    engine.add_default_edge(dedup.clone(), echo.clone())?;  // or add_edge(from, port, to) for a named port
 
     engine.push(&dedup, Message::json("reading", json!(42)))?;
     Ok(())

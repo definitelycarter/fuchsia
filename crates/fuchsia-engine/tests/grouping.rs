@@ -91,7 +91,7 @@ async fn groups_isolate_and_tear_down_independently() {
       .await
       .unwrap();
     engine
-      .add_edge(ActorId::scoped(group, "a"), ActorId::scoped(group, "b"))
+      .add_default_edge(ActorId::scoped(group, "a"), ActorId::scoped(group, "b"))
       .unwrap();
   }
 

@@ -621,6 +621,7 @@ dependencies = [
  "bson",
  "criterion",
  "fuchsia-actor",
+ "minijinja",
  "serde",
  "serde_json",
  "tokio",
@@ -654,10 +655,13 @@ dependencies = [
 name = "fuchsia-engine"
 version = "0.0.1-alpha.0"
 dependencies = [
+ "bson",
+ "criterion",
  "fuchsia-actor",
  "fuchsia-actor-builtins",
  "fuchsia-runtime",
  "fuchsia-transport",
+ "serde_json",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -1064,6 +1068,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad38eb12aea514a0466ea40a80fd8cc83637065948eb4a426e4aa46261175227"
 dependencies = [
  "rustix",
+]
+
+[[package]]
+name = "memo-map"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d1115007560874e373613744c6fba374c17688327a71c1476d1a5954cc857b"
+
+[[package]]
+name = "minijinja"
+version = "2.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb3d648e68cea56d9858d535ee28f9538404e2dd8cb08ed0bd05dca379477f39"
+dependencies = [
+ "memo-map",
+ "serde",
 ]
 
 [[package]]

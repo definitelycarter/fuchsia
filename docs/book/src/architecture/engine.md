@@ -126,16 +126,33 @@ the actor's own health ack. Time-based operators (debounce) arm these on input.
 
 ## Routing (`fuchsia-engine`)
 
-`Engine` wraps a `Runtime` and a live **routing table** (`RouterState`: a map of
-each node's successors, and a map of every node's mailbox + health). All methods
-take `&self`, so the engine is shared as `Arc<Engine>`.
+`Engine` wraps a `Runtime` and a live **routing table** (`RouterState`: a
+*nested* map of each node's successors keyed by **output port**, a map of every
+node's mailbox + health, each node's declared output ports, and per-`(node,
+port)` route counters). All methods take `&self`, so the engine is shared as
+`Arc<Engine>`.
 
 - **`add_node(id, type_name, config, caps)`** — the engine adds the one
   capability it owns, `emit` (a `RoutedEmit` closed over this node's id and the
-  shared table), spawns the actor through the runtime, and registers its mailbox
-  as a routable target.
-- **`add_edge(from, to)`** — records that `from`'s emissions flow to `to`.
-- **`remove_graph(group)`** — stops every actor in a group and drops its edges.
+  shared table), spawns the actor through the runtime, registers its mailbox as a
+  routable target, and records the node's declared output ports (from its
+  creator's `output_ports`) for edge validation.
+- **`add_edge(from, port, to)`** — records that `from`'s emissions *on `port`*
+  flow to `to`. A port may have several edges (fan-out within a port), so the
+  default `"out"` port with many edges is the old single-output behavior. Rejects
+  an edge whose `port` a `Fixed`-port source node doesn't declare
+  (`EngineError::UnknownPort`); `"out"` is always allowed and `"error"` is
+  reserved for the failure branch; `Dynamic` (guest) nodes accept any port. The
+  terse **`add_default_edge(from, to)`** forwards to the `"out"` port.
+- **`route_counts(node, port)`** — reads the in-process route-outcome counters
+  (`delivered` / `shed` / `no_route`) for one `(node, port)`. The counters are
+  pre-created on the cold paths (declared + wired ports), so the routing path
+  only looks them up and bumps an atomic — no per-emit lock. Every emit is
+  bucketed, including an emit to an unwired port (counted `no_route`); an emit on
+  a port a `Dynamic` node neither declared nor wired lands on a per-node fallback
+  (`route_counts_fallback(node)`), so nothing routes silently.
+- **`remove_graph(group)`** — stops every actor in a group and drops its edges,
+  port declarations, and counters.
   Scoped to the group; other graphs are untouched, and cross-group edges into it
   simply stop resolving (a graceful drop).
 - **`push(entrypoint, msg)`** — offers an external event into one node's mailbox
@@ -149,18 +166,26 @@ take `&self`, so the engine is shared as `Arc<Engine>`.
   the queue, lease, and the caller-applied timeout/retry live above it, so
   entrypoints reached this way must be idempotent.
 
-When an actor emits, `RoutedEmit` looks up the source's successors and `offer`s a
-clone of the message to each successor's mailbox. The actor stays
-neighbor-ignorant; the engine owns the addressing, and because the table is a
-lookup (not baked wiring) graphs can come and go without re-instantiating actors.
+When an actor emits, it names an **output port** (`emit_to("true", msg)`, or the
+default `emit(msg)` → `"out"`); `RoutedEmit` looks up the successors wired to
+*that port* and `offer`s a clone of the message to each. Only the chosen port's
+edges receive it, so a node selects among its own outputs while the graph still
+owns which actor each output reaches. The actor stays neighbor-ignorant — it
+names a port, never a peer — and because the table is a lookup (not baked wiring)
+graphs can come and go without re-instantiating actors.
 
 ### Topology semantics
 
 These fall out of "mailbox per actor, routing table per engine":
 
 - **Linear chain.** One successor; messages flow straight through.
-- **Fan-out (one → many).** A node with several successors `offer`s a clone to
-  each. Every downstream sees the same value.
+- **Fan-out (one → many).** A port with several edges `offer`s a clone to each.
+  Every downstream wired to that port sees the same value.
+- **Branching (one of N).** A node emits on one of its **named output ports**
+  (`"true"`/`"false"` from an `if`, a case port from a `switch`); only that
+  port's edges receive the message. Branching (which port) and fan-out (how many
+  edges on a port) compose — see the [named output ports](../rfcs/output-ports.md)
+  RFC.
 - **Fan-in / merge (many → one).** Several nodes share one successor; its mailbox
   interleaves their emissions as they arrive. This is *merge*, not a synchronous
   join — "wait for one from each and combine" is a dedicated actor's job.

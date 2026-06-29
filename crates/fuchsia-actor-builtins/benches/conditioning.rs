@@ -13,7 +13,7 @@ use fuchsia_actor_builtins::{DedupCreator, PassthroughCreator};
 /// Discards emissions — keeps the bench on the operator, not a real sink.
 struct Noop;
 impl Emit for Noop {
-  fn emit(&self, _msg: Message) {}
+  fn emit_to(&self, _port: &str, _msg: Message) {}
 }
 
 fn rt() -> tokio::runtime::Runtime {

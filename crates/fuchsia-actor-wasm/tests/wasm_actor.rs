@@ -121,7 +121,7 @@ async fn wasm_component_echoes_through_a_provisioned_graph() {
     .await
     .expect("add recorder node");
   engine
-    .add_edge(wasm_id.clone(), rec_id.clone())
+    .add_default_edge(wasm_id.clone(), rec_id.clone())
     .expect("add edge");
 
   // Push a message into the wasm node; it echoes onward to the recorder.

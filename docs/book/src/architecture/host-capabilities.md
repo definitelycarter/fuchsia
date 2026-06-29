@@ -42,14 +42,19 @@ into the same bag under its own trait type (see [below](#domain-capabilities-liv
 ### `emit` — route output downstream
 
 ```rust
-pub trait Emit: Send + Sync { fn emit(&self, msg: Message); }
+pub trait Emit: Send + Sync {
+    fn emit_to(&self, port: &str, msg: Message);
+    fn emit(&self, msg: Message) { self.emit_to("out", msg); }  // default → "out"
+}
 ```
 
-Provided by the **engine**. `caps.emit()` returns a sink that, on `emit`, looks
-up this actor's successors in the routing table and delivers a clone to each.
-The actor never names a neighbor — emission is fire-and-forget and infallible
-(a full downstream mailbox sheds; see [Runtime & Engine](./engine.md)). If no
-sink was wired, `emit()` falls back to a no-op, so an actor can always emit.
+Provided by the **engine**. `caps.emit()` returns a sink that, on `emit_to`,
+looks up the successors wired to *that named output port* (`"out"` by default)
+and delivers a clone to each. The actor names one of *its own* outputs, never a
+neighbor — emission is fire-and-forget and infallible (a full downstream mailbox
+sheds; see [Runtime & Engine](./engine.md)). If no sink was wired, `emit_to`
+falls back to a no-op, so an actor can always emit. See the
+[named output ports](../rfcs/output-ports.md) RFC for the routing semantics.
 
 `emit` is **synchronous** — it's a non-blocking channel `offer`. The Wasm and
 Lua hosts drive their guests via async wasmtime / mlua, but keeping `emit` a

@@ -103,7 +103,7 @@ async fn trace_follows_a_message_across_the_mailbox_hop() {
     .await
     .unwrap();
   engine
-    .add_edge(ActorId::new("a"), ActorId::new("b"))
+    .add_default_edge(ActorId::new("a"), ActorId::new("b"))
     .unwrap();
 
   // Push within a root span; passthrough (a) re-emits → routes to sink (b).

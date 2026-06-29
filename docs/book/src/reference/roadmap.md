@@ -7,7 +7,6 @@ lands (no strikethrough).
 
 | Feature | Description | Notes |
 |---------|-------------|-------|
-| Named output ports | Multiple named outputs per actor so routing can branch (IF/Switch, error branches) instead of cloning to every successor. See [RFC](../rfcs/output-ports.md). | `fuchsia-actor`, `fuchsia-engine`, `wit` |
 | Per-message correlation id | A run id minted at the trigger and propagated through every emit/hop and the guest boundary, for error and result correlation. See [RFC](../rfcs/message-correlation-id.md). | `fuchsia-actor`, `fuchsia-transport`, `fuchsia-runtime`, `fuchsia-engine` |
 | Node failure handling | Death detection (the zombie-actor fix), per-node error policy, error output port, retry, dead-letter sink. See [RFC](../rfcs/node-failure-handling.md). | `fuchsia-runtime`, `fuchsia-engine`, `fuchsia-actor` |
 | Graceful shutdown | `engine.shutdown(deadline)` — seal entrypoints, drain source → sink, run each `teardown`, deadline-bounded; requires a DAG. See [RFC](../rfcs/graceful-shutdown.md). | `fuchsia-engine`, `fuchsia-runtime` |
@@ -34,7 +33,7 @@ lands (no strikethrough).
 
 | Gap | Priority |
 |-----|----------|
-| No cycle detection when adding edges; back-edge behavior is unspecified | Medium |
+| No cycle detection when adding edges; back-edge behavior is unspecified. Resolved by [DAG enforcement](../rfcs/dag-enforcement.md); the [output-ports](../rfcs/output-ports.md) loop model (loop-as-node, acyclic graph) depends on it. | Medium |
 | Routing sheds on a full downstream mailbox (at-most-once) with no per-target backpressure option | Low (intentional for the conditioning path; revisit if a lossless route is needed) |
 
 ### `fuchsia-actor-wasm`
@@ -50,6 +49,7 @@ lands (no strikethrough).
 | Should `ActorContext` ids be `Arc<str>`? | Per-message `node_id.clone()` shows up in the guest hosts. Trivial individually; could compound. Not yet profiled. |
 | Machine-readable schema for actor configs | Each actor dictates its own `settings` type; no schema for tooling/plugin-store UI. Could derive via `schemars`. |
 | Replay / in-flight inspection | Should the runtime support observing messages in mailboxes for debugging? |
+| Routing counters' surface | The engine now tracks per-`(node, port)` `delivered`/`shed`/`no_route` counts in-process ([named output ports](../rfcs/output-ports.md)); whether they graduate to a metrics/trace export is a later observability decision. |
 
 ## Housekeeping
 

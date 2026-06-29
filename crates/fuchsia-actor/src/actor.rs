@@ -45,12 +45,27 @@ impl Message {
   }
 }
 
+/// The default output port. An actor that does not select a port emits here,
+/// and an edge wired without an explicit source port leaves from here.
+pub const DEFAULT_PORT: &str = "out";
+
 /// Sink for the messages an actor emits. The host supplies the implementation
 /// when it builds the [`ActorContext`], so the actor stays neighbor-ignorant:
-/// it emits, and the host decides where the message goes (a downstream node's
-/// transport, a state write, nowhere).
+/// it emits to a *named output port*, and the host decides which successors
+/// that port reaches (a downstream node's transport, a state write, nowhere).
+///
+/// An actor names a port (one of *its own* outputs — `"out"`, `"true"`,
+/// `"case-a"`, …), never a peer; the graph still decides which actor each port
+/// connects to.
 pub trait Emit: Send + Sync {
-  fn emit(&self, msg: Message);
+  /// Emit `msg` on the named output `port`.
+  fn emit_to(&self, port: &str, msg: Message);
+
+  /// Convenience: emit on the default [`DEFAULT_PORT`] (`"out"`) port. Existing
+  /// single-output actors keep calling this unchanged.
+  fn emit(&self, msg: Message) {
+    self.emit_to(DEFAULT_PORT, msg);
+  }
 }
 
 /// Default sink for a context with no output wired — emitted messages are
@@ -58,7 +73,7 @@ pub trait Emit: Send + Sync {
 struct NoopEmit;
 
 impl Emit for NoopEmit {
-  fn emit(&self, _msg: Message) {}
+  fn emit_to(&self, _port: &str, _msg: Message) {}
 }
 
 /// Capability for an actor to schedule a delayed message to *itself*. The host
@@ -175,4 +190,44 @@ pub trait Actor: Send + 'static {
   async fn setup(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
   async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError>;
   async fn teardown(&mut self, ctx: &ActorContext) -> Result<(), ActorError>;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::sync::Mutex;
+
+  /// Records the (port, message-type) of every emission.
+  struct PortRecorder(Mutex<Vec<(String, String)>>);
+
+  impl Emit for PortRecorder {
+    fn emit_to(&self, port: &str, msg: Message) {
+      self
+        .0
+        .lock()
+        .expect("lock")
+        .push((port.to_owned(), msg.type_));
+    }
+  }
+
+  #[test]
+  fn emit_delegates_to_default_port() {
+    let recorder = PortRecorder(Mutex::new(Vec::new()));
+    // The default `emit` must land on `"out"`.
+    recorder.emit(Message::empty("a"));
+    recorder.emit_to("true", Message::empty("b"));
+    let recorded = recorder.0.lock().expect("lock");
+    assert_eq!(
+      *recorded,
+      vec![
+        ("out".to_owned(), "a".to_owned()),
+        ("true".to_owned(), "b".to_owned()),
+      ]
+    );
+  }
+
+  #[test]
+  fn default_port_constant_is_out() {
+    assert_eq!(DEFAULT_PORT, "out");
+  }
 }

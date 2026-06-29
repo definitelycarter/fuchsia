@@ -10,6 +10,14 @@ pub enum EngineError {
   Lock,
   #[error("node not found: {0}")]
   NotFound(ActorId),
+  /// `add_edge` only: the source node declares a [`Fixed`] set of output ports
+  /// and `port` is not one of them (nor the always-allowed `"out"` / reserved
+  /// `"error"`). A typo'd or non-existent port, rejected up front rather than
+  /// silently never routing. `Dynamic` nodes never produce this.
+  ///
+  /// [`Fixed`]: fuchsia_actor::OutputPorts::Fixed
+  #[error("node {node} has no output port {port:?}")]
+  UnknownPort { node: ActorId, port: String },
   /// `push_durable` only: the entrypoint handled the message but its handler
   /// returned an error — retriable, though a persistent failure is a poison
   /// candidate the caller may dead-letter.

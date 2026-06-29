@@ -13,7 +13,7 @@ From the bottom up:
 ┌──────────────────────────────────────────────────────────────────────┐
 │ fuchsia-engine — routing                                              │
 │   Engine: add_node / add_edge / push; routes each emit to the         │
-│   downstream mailboxes per the graph's edges (provides `emit`)        │
+│   mailboxes wired to its output port per the graph's edges (`emit`)   │
 └───────────────────────────────┬────────────────────────────────────────┘
                                 │ spawns / delivers to
                                 ▼
@@ -60,9 +60,10 @@ whole kind of node (every `"debounce"` node, every `"wasm"` node).
 
 The **engine** turns nodes and edges into a running graph. `add_node`
 instantiates an actor (through its creator) and registers its mailbox as a
-routable target; `add_edge` records that one node's emissions flow to another's
-mailbox. When an actor emits, the engine looks up that actor's successors in a
-live routing table and delivers to each. `push` injects an external event into
+routable target; `add_edge(from, port, to)` records that one node's emissions
+*on a named output port* flow to another's mailbox. When an actor emits on a
+port, the engine looks up the successors wired to that port in a live routing
+table and delivers to each. `push` injects an external event into
 one entrypoint's mailbox. The graph is configuration the host builds directly;
 how that configuration is authored or persisted is a product concern, not the
 runtime's.

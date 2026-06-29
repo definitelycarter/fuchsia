@@ -70,7 +70,7 @@ The first two are foundational — the rest build on them.
 
 | RFC | Status | Summary |
 |-----|--------|---------|
-| [Named Output Ports](./output-ports.md) | proposed | Multiple named outputs per actor so routing can branch (IF/Switch, error branches) instead of cloning to every successor. |
+| [Named Output Ports](./output-ports.md) | implemented | Multiple named outputs per actor so routing can branch (IF/Switch, error branches) instead of cloning to every successor. |
 | [Per-Message Correlation Id](./message-correlation-id.md) | proposed | A run id minted at the trigger and propagated through every hop and the guest boundary, for error and result correlation. |
 | [Async Actor Contract](./async-actor-contract.md) | proposed | `Actor` lifecycle goes `async` so handles can `.await` I/O without blocking a thread; the guest WIT stays synchronous (wasmtime drives guests async). Foundational. |
 | [Node Failure Handling](./node-failure-handling.md) | proposed | Death detection (the zombie-actor fix), per-node error policy, an error output port, retry, and a dead-letter sink. |

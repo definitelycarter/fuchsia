@@ -13,12 +13,13 @@ A **library** (not a CLI, not a daemon) that embeds into a host application.
 The host:
 
 1. Registers **actor creators** by type name — one creator per actor *kind*
-   (`"passthrough"`, `"debounce"`, `"wasm"`, `"lua"`, …).
+   (`"passthrough"`, `"debounce"`, `"if"`, `"switch"`, `"wasm"`, `"lua"`, …).
 2. Provisions a **graph**: adds nodes (each an actor instance with config) and
-   edges directly against the engine.
+   edges directly against the engine. An edge leaves from a source node's
+   **named output port** (`"out"` by default), so a node can branch.
 3. Pushes messages into a node's mailbox. The runtime calls that actor's
-   `handle`, the actor emits, and the engine routes the emission onward until
-   the graph goes quiet.
+   `handle`, the actor emits on a port, and the engine routes the emission to
+   that port's successors until the graph goes quiet.
 
 The host owns everything outside the core dataflow loop: where actors come from
 (a builtin set, a component store, a config file), what capabilities they're

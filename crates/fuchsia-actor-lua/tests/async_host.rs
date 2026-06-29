@@ -21,7 +21,7 @@ use fuchsia_actor_lua::{LuaActorCreator, LuaHost, mlua};
 struct Capture(Arc<Mutex<Vec<Message>>>);
 
 impl Emit for Capture {
-  fn emit(&self, msg: Message) {
+  fn emit_to(&self, _port: &str, msg: Message) {
     self.0.lock().unwrap().push(msg);
   }
 }

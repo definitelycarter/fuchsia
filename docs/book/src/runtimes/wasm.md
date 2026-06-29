@@ -88,15 +88,19 @@ interface actor {
 // emit.wit
 interface emit {
   use types.{payload};
-  send: func(msg: payload) -> result<_, string>;
+  send-to: func(port: string, msg: payload) -> result<_, string>;  // a named output port
+  send:    func(msg: payload) -> result<_, string>;                // = send-to("out", msg)
 }
 ```
 
 All three lifecycle exports are required; stateless components make `setup` /
 `teardown` no-ops returning `Ok(())`. The `payload` value mirrors `MessageValue`
 exactly — `json(string)` / `binary(list<u8>)` / `empty`. Outbound emissions go
-through the host-imported `emit.send`, **not** through `handle`'s return value;
-`handle` returns `Ok(())` once it's done.
+through the host-imported `emit` — `send-to(port, msg)` for a **named output
+port**, or `send(msg)` for the default `"out"` port — **not** through `handle`'s
+return value; `handle` returns `Ok(())` once it's done. Each emission reaches
+only the successors wired to its port (see
+[named output ports](../rfcs/output-ports.md)).
 
 `wit/` ships only `fuchsia:actor` — there is **no bundled platform world**. A
 component's world is the product's (or, for a contract-only component, a tiny

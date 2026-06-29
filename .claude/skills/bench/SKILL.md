@@ -15,6 +15,7 @@ We benchmark with **criterion**, targeted before/after by default: capture the a
 |-------|---------------|------------------|
 | `fuchsia-runtime` | `chain_throughput` | End-to-end throughput pushing 1k messages through a linear chain of K passthrough actors (K = 1, 4, 16). Includes spawn + teardown. |
 | `fuchsia-runtime` | `fan_out` | End-to-end throughput pushing 1k messages through one passthrough that fans out to W sinks (W = 2, 8, 32). Throughput is per input message; divide by W for per-edge cost. |
+| `fuchsia-engine` | `routing` | The routing hot path in isolation — `RoutedEmit::emit` → `RouterState::route` plus the per-port counter bump, via the `Engine::emit_sink` bench seam (no actor task / recv loop). `route_single`; `route_fanout/{1,4,16}` (per-port fan-out); `route_concurrent/{2,4,8}` (N threads emitting in parallel — the contention shape that motivated the lock-free counter design). |
 
 Run a single harness once they exist:
 
@@ -32,6 +33,7 @@ Use this to pick which benches to run for a given change. **Widen when uncertain
 | `crates/fuchsia-actor/src/actor.rs` (trait shape, `async-trait` boxing) | `fuchsia-runtime::chain_throughput` |
 | `crates/fuchsia-runtime/src/orchestrator.rs` | `fuchsia-runtime::chain_throughput`, `fuchsia-runtime::fan_out` |
 | `crates/fuchsia-runtime/src/registry.rs` (instantiate path) | `fuchsia-runtime::chain_throughput` |
+| `crates/fuchsia-engine/src/router.rs` (routing table, route, counters) | `fuchsia-engine::routing` |
 
 Not yet covered (consider adding harnesses when these areas change materially):
 

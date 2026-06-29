@@ -40,7 +40,9 @@ Crates are layered bottom-up; each depends only on the layer below.
     `RouterState`, and provides the `emit` capability (`RoutedEmit`). Knows
     only actors + addressing.
   - `fuchsia-actor-builtins` — Native builtin actors: `passthrough`,
-    `debounce`, `deadband`, `dedup`, plus `register`.
+    `debounce`, `deadband`, `dedup`, the branching nodes `if` / `switch` (over a
+    `Condition` enum — declarative `field`/`op`/`value` with `all`/`any`, plus a
+    minijinja `expr` arm), plus `register`.
   - `fuchsia-actor-wasm` — Wasm-component-hosting actors. `WasmActor<H: WasmHost>`
     + `WasmActorCreator<H>` (one creator per `"wasm"` runtime, component
     catalog; component id from `ActorConfig.env`) + `BaseHost` (contract-only:
@@ -59,7 +61,8 @@ Crates are layered bottom-up; each depends only on the layer below.
   - `actor.wit` — Lifecycle: `setup(ctx)`, `handle(ctx, msg)`, `teardown(ctx)`,
     all returning `result<_, string>`.
   - `types.wit` — `payload` (`%type` + `payload-value`: json | binary | empty).
-  - `emit.wit` — Host-imported `emit.send(payload)`.
+  - `emit.wit` — Host-imported `emit.send-to(port, payload)` (per named output
+    port) and `emit.send(payload)` (the `"out"` default).
 - `test-components/actor-echo/` — Standalone-workspace crate that compiles to a
   wasm component (imports only `fuchsia:actor`) for the `fuchsia-actor-wasm`
   integration test. Requires `cargo component build --release`; the test and the

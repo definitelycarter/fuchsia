@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use fuchsia_actor::{
-  Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorFactory, ActorId, Message,
+  Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorFactory, ActorId,
+  Message, OutputPorts,
 };
 use fuchsia_transport::{Ack, Delivery, Health, MailboxRx, MailboxTx, mailbox};
 
@@ -71,6 +72,10 @@ impl Runtime {
     }));
 
     let actor = self.factory.create(type_name, config, &caps)?;
+    // Resolve the node's declared output ports from the same creator, so the
+    // engine can validate edges against them. Same name-keyed lookup `create`
+    // just did, so the two cannot drift.
+    let output_ports = self.factory.output_ports(type_name, config)?;
     let ctx = Self::context(&actor_id);
 
     Ok(Spawning {
@@ -81,6 +86,7 @@ impl Runtime {
       tx,
       rx,
       health,
+      output_ports,
     })
   }
 
@@ -88,7 +94,13 @@ impl Runtime {
   /// routable target — the second half of a spawn. Re-checks for a duplicate id:
   /// another spawn may have committed the same id while `setup` ran outside the
   /// lock, in which case the prepared actor is dropped.
-  pub fn commit(&mut self, spawning: Spawning) -> Result<(MailboxTx, Arc<Health>), RuntimeError> {
+  ///
+  /// Hands back the node's declared [`OutputPorts`] alongside its mailbox/health
+  /// so the engine can store the declaration and validate edges against it.
+  pub fn commit(
+    &mut self,
+    spawning: Spawning,
+  ) -> Result<(MailboxTx, Arc<Health>, OutputPorts), RuntimeError> {
     let Spawning {
       actor,
       ctx,
@@ -97,6 +109,7 @@ impl Runtime {
       tx,
       rx,
       health,
+      output_ports,
     } = spawning;
 
     if self.registry.contains(&actor_id) {
@@ -111,7 +124,7 @@ impl Runtime {
       health.clone(),
     ));
 
-    Ok((tx, health))
+    Ok((tx, health, output_ports))
   }
 
   /// Spawn an actor end to end — [`prepare`](Self::prepare), `setup`,
@@ -125,7 +138,7 @@ impl Runtime {
     type_name: &str,
     config: &ActorConfig,
     caps: ActorCapabilities,
-  ) -> Result<(MailboxTx, Arc<Health>), RuntimeError> {
+  ) -> Result<(MailboxTx, Arc<Health>, OutputPorts), RuntimeError> {
     let mut spawning = self.prepare(actor_id, type_name, config, caps)?;
     spawning.setup().await?;
     self.commit(spawning)
@@ -176,6 +189,7 @@ pub struct Spawning {
   tx: MailboxTx,
   rx: MailboxRx,
   health: Arc<Health>,
+  output_ports: OutputPorts,
 }
 
 impl Spawning {

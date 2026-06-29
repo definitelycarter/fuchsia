@@ -8,14 +8,16 @@ use fuchsia_actor::{Emit, Message, MessageValue};
 
 use crate::host::LuaHost;
 
-/// Contract-only [`LuaHost`]: registers `emit(msg)` and nothing else.
+/// Contract-only [`LuaHost`]: registers `emit(msg)` / `emit_to(port, msg)` and
+/// nothing else.
 ///
 /// Scripts emit with:
 /// ```lua
-/// emit({ type = "echo", value = { kind = "json", data = "42" } })
+/// emit({ type = "echo", value = { kind = "json", data = "42" } })          -- default "out" port
+/// emit_to("true", { type = "echo", value = { kind = "empty" } })           -- a named port
 /// ```
 /// `kind` is `"json" | "binary" | "empty"`. The emission is best-effort (a
-/// non-blocking channel offer), so `emit` always returns successfully.
+/// non-blocking channel offer), so both globals always return successfully.
 #[derive(Default)]
 pub struct BaseLuaHost;
 
@@ -32,11 +34,21 @@ impl LuaHost for BaseLuaHost {
 }
 
 fn register_emit(lua: &mlua::Lua, emit: Arc<dyn Emit>) -> mlua::Result<()> {
+  // `emit(msg)` — the default "out" port. Refcount bump on the shared sink so
+  // both globals can own a handle.
+  let emit_default = Arc::clone(&emit);
   let emit_fn = lua.create_function(move |_, msg: mlua::Table| {
-    emit.emit(table_to_message(&msg)?);
+    emit_default.emit(table_to_message(&msg)?);
     Ok(())
   })?;
-  lua.globals().set("emit", emit_fn)
+  lua.globals().set("emit", emit_fn)?;
+
+  // `emit_to(port, msg)` — a named output port.
+  let emit_to_fn = lua.create_function(move |_, (port, msg): (String, mlua::Table)| {
+    emit.emit_to(&port, table_to_message(&msg)?);
+    Ok(())
+  })?;
+  lua.globals().set("emit_to", emit_to_fn)
 }
 
 /// Convert an emitted Lua table into a [`Message`].

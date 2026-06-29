@@ -171,14 +171,15 @@ async fn main() {
     .await
     .expect("add printer node");
 
+  // These are single-output nodes, so the terse default-port wiring fits.
   engine
-    .add_edge(convert.clone(), dedup.clone())
+    .add_default_edge(convert.clone(), dedup.clone())
     .expect("edge convert→dedup");
   engine
-    .add_edge(dedup.clone(), wrap.clone())
+    .add_default_edge(dedup.clone(), wrap.clone())
     .expect("edge dedup→wrap");
   engine
-    .add_edge(wrap.clone(), out.clone())
+    .add_default_edge(wrap.clone(), out.clone())
     .expect("edge wrap→out");
 
   // ── Push readings into the entrypoint (the lua node) ─────────────────────
