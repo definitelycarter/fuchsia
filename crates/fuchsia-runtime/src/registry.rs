@@ -1,17 +1,30 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fuchsia_actor::ActorId;
 use fuchsia_transport::{Health, MailboxTx};
 
 /// A running actor's address book entry: its identity, type, the mailbox to
-/// deliver into, and its health counters.
+/// deliver into, its health counters, and a stop flag shared with its
+/// supervisor.
+///
+/// The `stopping` flag is how the per-node supervisor (which owns the actor's
+/// `JoinHandle`) tells an *intentional* shutdown apart from a *death*. A
+/// deliberate stop ([`ActorRegistry`] removal via `Runtime::stop` /
+/// `remove_graph`) sets it before the mailbox sender drops, so when the run
+/// loop then exits on its closed `rx` the supervisor reads a clean stop and
+/// does **not** count a death. An exit with the flag unset — a panic, or
+/// senders vanishing without an explicit stop — is a death.
 #[derive(Debug, Clone)]
 pub struct ActorHandle {
   id: ActorId,
   actor_type: String,
   mailbox: MailboxTx,
   health: Arc<Health>,
+  // Shared with the supervisor (an `Arc` so both ends see the same flag); a
+  // refcount bump on insert, not a re-allocation.
+  stopping: Arc<AtomicBool>,
 }
 
 impl ActorHandle {
@@ -26,6 +39,7 @@ impl ActorHandle {
       actor_type: actor_type.into(),
       mailbox,
       health,
+      stopping: Arc::new(AtomicBool::new(false)),
     }
   }
 
@@ -43,6 +57,22 @@ impl ActorHandle {
 
   pub fn health(&self) -> &Arc<Health> {
     &self.health
+  }
+
+  /// A handle to this node's stop flag, shared with its supervisor. The
+  /// supervisor reads it on the actor task's exit to tell an intentional stop
+  /// from a death.
+  pub(crate) fn stopping(&self) -> Arc<AtomicBool> {
+    // Refcount bump of the shared flag so the supervisor can hold its own
+    // handle to it.
+    Arc::clone(&self.stopping)
+  }
+
+  /// Mark this node as intentionally stopping, so its supervisor treats the
+  /// imminent run-loop exit as a clean shutdown rather than a death. Set before
+  /// the mailbox sender is dropped.
+  pub(crate) fn mark_stopping(&self) {
+    self.stopping.store(true, Ordering::SeqCst);
   }
 }
 

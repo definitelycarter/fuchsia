@@ -26,9 +26,28 @@ pub struct Engine {
 
 impl Engine {
   pub fn new() -> Self {
+    let router = Arc::new(RwLock::new(RouterState::default()));
+
+    // Install the runtime's death seam: when a node's task dies (a panic or an
+    // abnormal exit), the runtime supervisor calls this with the dead id, and
+    // the engine drops it from its router so it stops resolving as a routable
+    // target — an upstream emit to it then reads as `no_route`/shed, not a
+    // silent offer into a permanently dead mailbox. A refcount bump of the
+    // router handle so the listener can address the live table from a
+    // supervisor task.
+    let mut runtime = Runtime::new();
+    let router_for_death = Arc::clone(&router);
+    runtime.on_death(Arc::new(move |id: &ActorId| {
+      // A poisoned router lock means a prior panic mid-mutation; the node is
+      // already unreachable in practice, so dropping here is best-effort.
+      if let Ok(mut state) = router_for_death.write() {
+        state.deregister(id);
+      }
+    }));
+
     Self {
-      runtime: Mutex::new(Runtime::new()),
-      router: Arc::new(RwLock::new(RouterState::default())),
+      runtime: Mutex::new(runtime),
+      router,
     }
   }
 

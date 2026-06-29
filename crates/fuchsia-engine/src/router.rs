@@ -219,6 +219,21 @@ impl RouterState {
     self.targets.get(id)
   }
 
+  /// Drop a single node from the routing table so it stops resolving as a
+  /// routable target — its mailbox, the edges it owns, its port declarations,
+  /// and its counters. Called when the runtime reports the node *died* (its task
+  /// exited abnormally): an upstream emit to a dead node now reads as `no_route`
+  /// (shed), rather than offering into a permanently dead mailbox. Edges *into*
+  /// this node from elsewhere are left to resolve to nothing — the same graceful
+  /// drop `route` already handles for a missing target. Idempotent: a second
+  /// call (or a node already gone) is a no-op.
+  pub(crate) fn deregister(&mut self, id: &ActorId) {
+    self.targets.remove(id);
+    self.edges.remove(id);
+    self.ports.remove(id);
+    self.counters.remove(id);
+  }
+
   pub(crate) fn ids_in_group(&self, group: &str) -> Vec<ActorId> {
     self
       .targets

@@ -15,10 +15,17 @@ pub type Outcome = Result<(), ActorError>;
 /// Pre-write producers report outcomes here so failure is *observable*: a
 /// stalled pipeline shows up as a rising error count (and, later, staleness)
 /// rather than a silently frozen value.
+///
+/// `handled`/`errored` are *per-message* outcomes. `died` is a separate,
+/// *node-lifecycle* count: the node's task exited unexpectedly (a panic, or an
+/// abnormal loop exit) rather than handling another message — a node *death*,
+/// not a failed delivery. Keeping it distinct means a crashed node reads as a
+/// death, not as one more errored message folded into `errored`.
 #[derive(Debug, Default)]
 pub struct Health {
   handled: AtomicU64,
   errored: AtomicU64,
+  died: AtomicU64,
 }
 
 impl Health {
@@ -30,12 +37,27 @@ impl Health {
     }
   }
 
+  /// Record that the node's task died unexpectedly — its run loop exited by
+  /// panic or other abnormal termination, *not* a normal stop/teardown. Counted
+  /// separately from `errored` (a per-message outcome) so a node death is
+  /// observable as a distinct event. The runtime's per-node supervisor calls
+  /// this once when it detects its actor task has exited abnormally.
+  pub fn record_death(&self) {
+    self.died.fetch_add(1, Ordering::Relaxed);
+  }
+
   pub fn handled(&self) -> u64 {
     self.handled.load(Ordering::Relaxed)
   }
 
   pub fn errored(&self) -> u64 {
     self.errored.load(Ordering::Relaxed)
+  }
+
+  /// How many times this node's task has died unexpectedly (panic / abnormal
+  /// exit). `0` for a healthy node; a normal stop/teardown does **not** bump it.
+  pub fn died(&self) -> u64 {
+    self.died.load(Ordering::Relaxed)
   }
 }
 
@@ -130,6 +152,17 @@ mod tests {
     h.record(&err());
     assert_eq!(h.handled(), 2);
     assert_eq!(h.errored(), 1);
+  }
+
+  #[test]
+  fn record_death_is_separate_from_errored() {
+    let h = Health::default();
+    h.record(&err()); // a failed message
+    h.record_death(); // a node death
+    assert_eq!(h.errored(), 1);
+    assert_eq!(h.died(), 1);
+    // The death did not inflate the per-message counters.
+    assert_eq!(h.handled(), 1);
   }
 
   #[test]

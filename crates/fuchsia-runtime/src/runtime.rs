@@ -1,5 +1,5 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use fuchsia_actor::{
   Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorFactory, ActorId,
@@ -11,21 +11,53 @@ use crate::error::RuntimeError;
 use crate::registry::{ActorHandle, ActorRegistry};
 use crate::schedule::TokioSchedule;
 
+/// A reaction to a node's death, installed on the [`Runtime`] by the layer above
+/// it (the engine). Called **once**, on the supervisor task, with the dead
+/// node's [`ActorId`] when its actor task exits abnormally (a panic, or its
+/// senders vanishing without an explicit stop) — *not* on a clean
+/// stop/teardown.
+///
+/// This is the cross-layer seam death detection needs: the runtime owns the
+/// task and detects the exit, but only the engine owns the [`RouterState`] that
+/// `push`/`route` resolve against, so it must be told to drop the node so it
+/// stops resolving as a routable target. A callback (rather than a watch
+/// channel) is used so the engine *reacts* without spawning a poller, and so the
+/// restart supervisor (a later slice) can extend the same per-node seam.
+///
+/// [`RouterState`]: ../../fuchsia_engine/index.html
+pub type DeathListener = Arc<dyn Fn(&ActorId) + Send + Sync>;
+
 pub struct Runtime {
   factory: ActorFactory,
-  registry: ActorRegistry,
+  // Shared with each node's supervisor task so that, on a detected death, the
+  // supervisor can deregister the node from the runtime's own address book —
+  // keeping it consistent with the engine's router and giving `deliver`/`stop`
+  // an honest view of liveness. An `Arc<Mutex<…>>` because the supervisors are
+  // detached tasks that outlive any single `&mut self` borrow.
+  registry: Arc<Mutex<ActorRegistry>>,
+  // Installed by the engine via `on_death`; invoked by a supervisor when its
+  // node dies, so the engine can drop the node from its router.
+  death_listener: Option<DeathListener>,
 }
 
 impl Runtime {
   pub fn new() -> Self {
     Self {
       factory: ActorFactory::new(),
-      registry: ActorRegistry::new(),
+      registry: Arc::new(Mutex::new(ActorRegistry::new())),
+      death_listener: None,
     }
   }
 
   pub fn register(&mut self, type_name: impl Into<String>, creator: impl ActorCreator) {
     self.factory.register(type_name, creator);
+  }
+
+  /// Install the reaction run when a node dies. The engine installs a listener
+  /// that deregisters the dead node from its router so it stops resolving as a
+  /// routable target. See [`DeathListener`].
+  pub fn on_death(&mut self, listener: DeathListener) {
+    self.death_listener = Some(listener);
   }
 
   pub async fn spawn(
@@ -66,7 +98,7 @@ impl Runtime {
     config: &ActorConfig,
     caps: ActorCapabilities,
   ) -> Result<Spawning, RuntimeError> {
-    if self.registry.contains(&actor_id) {
+    if self.registry_contains(&actor_id)? {
       return Err(RuntimeError::AlreadyRunning(actor_id));
     }
 
@@ -118,17 +150,53 @@ impl Runtime {
       output_ports,
     } = spawning;
 
-    if self.registry.contains(&actor_id) {
+    let mut registry = self.registry.lock().map_err(|_| RuntimeError::Lock)?;
+    if registry.contains(&actor_id) {
       return Err(RuntimeError::AlreadyRunning(actor_id));
     }
 
-    tokio::spawn(run_actor(actor, ctx, rx));
-    self.registry.insert(ActorHandle::new(
-      actor_id,
+    let handle = ActorHandle::new(
+      // `ActorId` is `String`-backed, so this is a real clone, not a refcount
+      // bump — but `commit` is a cold per-spawn path and the supervisor needs an
+      // owned id of its own (it outlives this call), matching how `add_node` /
+      // `register` already clone the id on these cold paths.
+      actor_id.clone(),
       type_name,
+      // Refcount bump of the mpsc sender so the registry keeps a routable copy
+      // while the caller (the engine) gets one for its router.
       tx.clone(),
+      // Refcount bump of the shared health counters.
       health.clone(),
+    );
+
+    // Keep the actor's `JoinHandle` (previously discarded) and hand it, with the
+    // node's identity / health / stop flag, to a per-node **supervisor** task.
+    // The supervisor awaits the actor task and turns its exit into a lifecycle
+    // event: a panic (or an abnormal exit) deregisters the node and records a
+    // death, while a clean stop does neither. This is also the seam the future
+    // restart slice hooks into — the supervisor is the natural owner of the
+    // handle and the rebuild recipe.
+    let actor_task = tokio::spawn(run_actor(actor, ctx, rx));
+    tokio::spawn(supervise(
+      actor_task,
+      actor_id,
+      // Refcount bumps: the supervisor shares the same health counters and stop
+      // flag as the registry handle.
+      health.clone(),
+      handle.stopping(),
+      // A **weak** handle to the registry, not a strong one: the registry holds
+      // every node's mailbox sender, so a strong ref here would keep all those
+      // senders alive and a dropped `Runtime` could never close its actors'
+      // mailboxes (teardown would never run). Weak lets the registry drop with
+      // the `Runtime`; on death the supervisor upgrades to deregister, and a
+      // gone registry just means the whole runtime is already torn down.
+      Arc::downgrade(&self.registry),
+      // Refcount bump of the installed listener, if any.
+      self.death_listener.clone(),
     ));
+
+    registry.insert(handle);
+    drop(registry);
 
     Ok((tx, health, output_ports))
   }
@@ -151,27 +219,51 @@ impl Runtime {
   }
 
   pub async fn deliver(&self, actor_id: &ActorId, msg: Message) -> Result<(), RuntimeError> {
-    let handle = self
-      .registry
-      .get(actor_id)
-      .ok_or_else(|| RuntimeError::ActorNotFound(actor_id.clone()))?;
+    // Resolve the mailbox + health under the registry lock, then release it
+    // *before* the `.await`: holding a `std::sync::Mutex` guard across an await
+    // would make this future `!Send`. The mailbox/health are cheap refcount
+    // bumps. A node a supervisor has already deregistered (a death) is gone from
+    // the registry, so this is `ActorNotFound` — it no longer resolves.
+    let (mailbox, health) = {
+      let registry = self.registry.lock().map_err(|_| RuntimeError::Lock)?;
+      let handle = registry
+        .get(actor_id)
+        .ok_or_else(|| RuntimeError::ActorNotFound(actor_id.clone()))?;
+      // Refcount bumps of the mpsc sender and the shared health counters.
+      (handle.mailbox().clone(), handle.health().clone())
+    };
 
-    let delivery = Delivery::new(msg, Ack::Health(handle.health().clone()));
-    handle
-      .mailbox()
+    let delivery = Delivery::new(msg, Ack::Health(health));
+    mailbox
       .send(delivery)
       .await
       .map_err(|_| RuntimeError::Send("mailbox closed".to_owned()))
   }
 
   pub fn stop(&mut self, actor_id: &ActorId) -> Result<(), RuntimeError> {
-    self
-      .registry
+    let mut registry = self.registry.lock().map_err(|_| RuntimeError::Lock)?;
+    let handle = registry
       .remove(actor_id)
       .ok_or_else(|| RuntimeError::ActorNotFound(actor_id.clone()))?;
-    // dropping the handle closes tx, which closes rx in the task,
-    // causing the actor loop to exit and teardown to run
+    // Mark the node as intentionally stopping *before* its mailbox sender drops,
+    // so when the run loop then exits on its closed `rx` the supervisor reads a
+    // clean stop and does not count it as a death. Dropping the handle closes
+    // tx, which closes rx in the task, causing the actor loop to exit and
+    // teardown to run.
+    handle.mark_stopping();
     Ok(())
+  }
+
+  /// Whether the registry currently holds `id`. A small helper so the lock
+  /// (and its poison handling) lives in one place.
+  fn registry_contains(&self, id: &ActorId) -> Result<bool, RuntimeError> {
+    Ok(
+      self
+        .registry
+        .lock()
+        .map_err(|_| RuntimeError::Lock)?
+        .contains(id),
+    )
   }
 }
 
@@ -254,6 +346,87 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
   }
 
   let _ = actor.teardown(&ctx).await;
+}
+
+/// Watch one actor's task and turn its exit into a node-lifecycle event.
+///
+/// Holds the actor task's `JoinHandle` (no longer discarded at spawn) and awaits
+/// it. The task exits one of two ways:
+///
+/// - **Panic** — `handle`/`setup`/`teardown` unwound, so `join` resolves to
+///   `Err(JoinError)`. Always a death: `teardown` never ran and the node is
+///   permanently dead.
+/// - **Loop exit** — `rx` closed (every sender dropped) so the run loop ended
+///   and `teardown` ran; `join` resolves to `Ok(())`. This is a *death* only if
+///   the node was not intentionally stopped — i.e. the `stopping` flag is unset,
+///   meaning its senders vanished without a `Runtime::stop` (e.g. the registry
+///   entry was dropped out from under it). An intentional stop set the flag, so
+///   that case is a clean shutdown and is **not** counted as a death.
+///
+/// On a death the supervisor: records it on the node's [`Health`] (the distinct
+/// `died` counter, not `errored`), deregisters the node from the runtime's
+/// [`ActorRegistry`] so it stops resolving for `deliver`, and fires the
+/// [`DeathListener`] so the engine drops it from its router (so routed
+/// deliveries stop resolving to a dead mailbox). The deregistration is the seam
+/// the future restart slice extends — instead of only dropping the node, the
+/// supervisor will rebuild it on the surviving mailbox.
+async fn supervise(
+  actor_task: tokio::task::JoinHandle<()>,
+  actor_id: ActorId,
+  health: Arc<Health>,
+  stopping: Arc<AtomicBool>,
+  registry: Weak<Mutex<ActorRegistry>>,
+  death_listener: Option<DeathListener>,
+) {
+  let join = actor_task.await;
+
+  // Upgrade the weak registry handle. If it fails the whole `Runtime` has been
+  // dropped — a *global* teardown, not this one node dying — so its actors'
+  // mailboxes closed on purpose and a clean (`Ok`) exit here is not a death.
+  let registry = registry.upgrade();
+
+  // Classify the exit:
+  // - A panic (`Err`) is always a death — `teardown` never ran and the node is
+  //   permanently dead, even mid-teardown.
+  // - A clean loop exit (`Ok`) is a death only when the node was *not*
+  //   intentionally stopped (`stopping` unset) *and* the runtime is still up
+  //   (the registry upgraded) — i.e. its senders vanished out from under a live
+  //   runtime. An intentional stop, or a runtime-wide drop, is a clean shutdown.
+  let died = match &join {
+    Err(_panic) => true,
+    Ok(()) => !stopping.load(Ordering::SeqCst) && registry.is_some(),
+  };
+  if !died {
+    return;
+  }
+
+  if let Err(join_err) = &join {
+    // The panic was swallowed before (the `JoinHandle` was discarded); surface
+    // it so a dead node is not silent.
+    tracing::error!(node = %actor_id, error = %join_err, "actor task died (panic)");
+  } else {
+    tracing::error!(node = %actor_id, "actor task exited unexpectedly");
+  }
+
+  // Observable as a distinct death on the node's shared `Health` (the `died`
+  // counter, not `errored`).
+  health.record_death();
+
+  // Deregister from the runtime's address book so the node stops resolving for
+  // `deliver`. Best-effort on a poisoned lock — the death is already recorded on
+  // `Health`, and a poisoned registry means the process is already unwinding.
+  if let Some(registry) = &registry {
+    if let Ok(mut registry) = registry.lock() {
+      registry.remove(&actor_id);
+    }
+  }
+
+  // Tell the layer above (the engine) so it drops the node from its router,
+  // where routed deliveries actually resolve. Runs last so the runtime's own
+  // state is consistent first.
+  if let Some(listener) = death_listener {
+    listener(&actor_id);
+  }
 }
 
 /// A fresh, process-unique task id for one `handle` invocation. Monotonic, so
@@ -410,7 +583,7 @@ mod tests {
     rt.spawn(actor_id("a"), "echo", &ActorConfig::default())
       .await
       .unwrap();
-    assert!(rt.registry.contains(&actor_id("a")));
+    assert!(rt.registry_contains(&actor_id("a")).unwrap());
   }
 
   #[tokio::test]
@@ -466,7 +639,7 @@ mod tests {
       .await
       .unwrap();
     rt.stop(&actor_id("a")).unwrap();
-    assert!(!rt.registry.contains(&actor_id("a")));
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
   }
 
   #[tokio::test]
@@ -609,7 +782,127 @@ mod tests {
       .err()
       .unwrap();
     assert!(matches!(err, RuntimeError::Actor(ActorError::Setup(_))));
-    assert!(!rt.registry.contains(&actor_id("a")));
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+  }
+
+  // ---- Death detection ----
+
+  /// An actor whose `handle` panics on the first message — the zombie-maker the
+  /// RFC's death detection closes.
+  struct PanicActor;
+
+  #[async_trait]
+  impl Actor for PanicActor {
+    async fn handle(&mut self, _ctx: &ActorContext, _msg: Message) -> Result<(), ActorError> {
+      panic!("intentional panic in handle")
+    }
+  }
+
+  struct PanicCreator;
+
+  impl ActorCreator for PanicCreator {
+    fn create(
+      &self,
+      _config: &ActorConfig,
+      _caps: &ActorCapabilities,
+    ) -> Result<Box<dyn Actor>, ActorError> {
+      Ok(Box::new(PanicActor))
+    }
+  }
+
+  /// Install a death listener that records the dead ids and notifies, so a test
+  /// can await the death signal rather than sleep.
+  fn record_deaths(rt: &mut Runtime) -> (Arc<Mutex<Vec<ActorId>>>, Arc<Notify>) {
+    let dead = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
+    let dead_for_cb = dead.clone();
+    let notify_for_cb = notify.clone();
+    rt.on_death(Arc::new(move |id: &ActorId| {
+      dead_for_cb.lock().unwrap().push(id.clone());
+      notify_for_cb.notify_one();
+    }));
+    (dead, notify)
+  }
+
+  #[tokio::test]
+  async fn panicking_handle_is_detected_as_a_death() {
+    let mut rt = Runtime::new();
+    rt.register("panic", PanicCreator);
+    let (dead, notify) = record_deaths(&mut rt);
+
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(
+        actor_id("a"),
+        "panic",
+        &ActorConfig::default(),
+        ActorCapabilities::new(),
+      )
+      .await
+      .unwrap();
+    // The registry holds its own sender; drop the caller's so the mailbox isn't
+    // kept open by this test (matching how a real spawner hands the tx onward).
+    drop(tx);
+
+    // Deliver a message; handling it panics, unwinding the task.
+    rt.deliver(&actor_id("a"), Message::empty("boom"))
+      .await
+      .unwrap();
+
+    // The death signal fires: the supervisor saw the task die.
+    notify.notified().await;
+
+    // Observable on Health as a distinct death (not an errored message).
+    assert_eq!(health.died(), 1);
+    assert_eq!(health.errored(), 0);
+    // The listener was told which node died.
+    assert_eq!(dead.lock().unwrap().as_slice(), &[actor_id("a")]);
+    // The node stops resolving as a routable target in the runtime: deliver now
+    // reports it as gone.
+    assert!(!rt.registry_contains(&actor_id("a")).unwrap());
+    let err = rt
+      .deliver(&actor_id("a"), Message::empty("again"))
+      .await
+      .err()
+      .unwrap();
+    assert!(matches!(err, RuntimeError::ActorNotFound(_)));
+  }
+
+  #[tokio::test]
+  async fn normal_stop_runs_teardown_and_is_not_a_death() {
+    let probe = Probe::new();
+    let mut rt = Runtime::new();
+    rt.register(
+      "probe",
+      ProbeCreator {
+        probe: probe.clone(),
+      },
+    );
+    let (dead, _notify) = record_deaths(&mut rt);
+
+    let (tx, health, _ports) = rt
+      .spawn_with_caps(
+        actor_id("a"),
+        "probe",
+        &ActorConfig::default(),
+        ActorCapabilities::new(),
+      )
+      .await
+      .unwrap();
+    // Drop the caller's sender so `stop` (which drops the registry's sender) is
+    // enough to close the mailbox and let the run loop reach teardown.
+    drop(tx);
+
+    rt.stop(&actor_id("a")).unwrap();
+    // teardown runs on the clean stop.
+    probe.notify.notified().await;
+    assert!(probe.teardown_called.load(Ordering::SeqCst));
+
+    // Give the supervisor a chance to (wrongly) record a death, then assert it
+    // did not: a clean stop is not a death and fires no death signal.
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert_eq!(health.died(), 0);
+    assert!(dead.lock().unwrap().is_empty());
   }
 
   // ---- Scheduler actor (schedules a delayed message to itself) ----

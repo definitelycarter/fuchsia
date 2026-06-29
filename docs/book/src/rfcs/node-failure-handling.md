@@ -1,10 +1,12 @@
 # RFC: Node Failure Handling
 
-> **Status: accepted.** The three open questions are resolved (see
-> [Decisions](#decisions)); ready to implement. The death-detection part (part 1) is
-> a correctness fix that lands first. Tracked in the
-> [roadmap](../reference/roadmap.md#features) Features table and the
-> `fuchsia-runtime` Gaps table.
+> **Status: in progress — part 1 (death detection) shipped.** The three open
+> questions are resolved (see [Decisions](#decisions)). Part 1 has landed: the runtime
+> keeps the actor task's `JoinHandle`, a per-node supervisor deregisters a dead node
+> so it stops resolving, records a distinct `Health::died` count, and surfaces a death
+> callback the engine reacts to. Parts 2–4 (error policy, error port, dead-letter) and
+> restart/poison are pending. Tracked in the
+> [roadmap](../reference/roadmap.md#features) Features table.
 
 ## Concept
 

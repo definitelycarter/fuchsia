@@ -11,4 +11,6 @@ pub enum RuntimeError {
   Actor(#[from] ActorError),
   #[error("send failed: {0}")]
   Send(String),
+  #[error("registry lock poisoned")]
+  Lock,
 }

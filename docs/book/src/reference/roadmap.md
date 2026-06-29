@@ -23,7 +23,6 @@ lands (no strikethrough).
 
 | Gap | Priority |
 |-----|----------|
-| A panicking `handle` silently zombifies the actor: the task dies, but its `JoinHandle` is dropped, `teardown` never runs, and the mailbox stays registered, so routed deliveries shed unobserved. No death detection. See [RFC](../rfcs/node-failure-handling.md). | High |
 | Mailbox capacity is a hardcoded `mailbox(32)` in `spawn_with_caps`; not configurable per-node or per-graph | Medium |
 | A long-running `handle` runs to completion — there is no mid-call interruption (cancellation is between messages, via mailbox close) | Medium |
 
