@@ -272,7 +272,7 @@ impl Actor for ExecRecorder {
       .exec_ids
       .lock()
       .expect("exec lock")
-      .push(ctx.execution_id.clone());
+      .push(ctx.execution_id.to_string());
     self.out.lock().expect("out lock").push(msg);
     self.notify.notify_one();
     Ok(())

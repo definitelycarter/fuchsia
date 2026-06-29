@@ -117,9 +117,11 @@ fn build_ctx(lua: &mlua::Lua, ctx: &ActorContext) -> Result<mlua::Table, ActorEr
       .set(k, v)
       .map_err(|e| ActorError::Handle(format!("lua ctx set {k}: {e}")))
   };
-  set("execution_id", &ctx.execution_id)?;
-  set("node_id", &ctx.node_id)?;
-  set("task_id", &ctx.task_id)?;
+  // The ids are `Arc<str>`; deref to `&str` for the Lua table (the guest sees
+  // plain strings).
+  set("execution_id", ctx.execution_id.as_ref())?;
+  set("node_id", ctx.node_id.as_ref())?;
+  set("task_id", ctx.task_id.as_ref())?;
   Ok(table)
 }
 

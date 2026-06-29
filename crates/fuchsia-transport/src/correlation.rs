@@ -41,6 +41,16 @@ impl CorrelationId {
     &self.0
   }
 
+  /// The inner `Arc<str>`, cheaply shared. This is a refcount bump (not an
+  /// allocation), so the runtime can hand the correlation straight into a
+  /// per-message [`ActorContext::execution_id`] without copying the string.
+  ///
+  /// [`ActorContext::execution_id`]: fuchsia_actor::ActorContext::execution_id
+  pub fn as_arc(&self) -> Arc<str> {
+    // Refcount bump of the shared id — the whole point of the `Arc<str>` newtype.
+    Arc::clone(&self.0)
+  }
+
   /// Run `fut` with `self` as the current correlation — a task-local, the
   /// analog of entering a tracing span for the duration of a future. Any
   /// [`Delivery::new`](crate::Delivery::new) constructed inside `fut` (an
@@ -122,6 +132,15 @@ mod tests {
   fn clone_is_equal() {
     let id = CorrelationId::from("run-1");
     assert_eq!(id.clone(), id);
+  }
+
+  #[test]
+  fn as_arc_shares_the_inner_id() {
+    let id = CorrelationId::from("run-9");
+    let arc = id.as_arc();
+    assert_eq!(&*arc, "run-9");
+    // Same allocation, shared — handing it out is a refcount bump.
+    assert!(Arc::ptr_eq(&arc, &id.as_arc()));
   }
 
   #[test]

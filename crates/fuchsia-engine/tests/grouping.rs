@@ -26,7 +26,7 @@ impl Actor for NodeRecorder {
       .sink
       .lock()
       .unwrap()
-      .push((ctx.node_id.clone(), msg.type_.clone()));
+      .push((ctx.node_id.to_string(), msg.type_.clone()));
     self.notify.notify_one();
     Ok(())
   }

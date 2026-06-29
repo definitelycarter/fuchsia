@@ -164,18 +164,31 @@ impl ActorCapabilities {
 /// Per-call identity threaded through every actor invocation — mirrors the WIT
 /// context record (execution-id, node-id, task-id). Just *who / which run*;
 /// capabilities are injected separately, at construction.
+///
+/// The ids are `Arc<str>` rather than `String` because the runtime rebuilds this
+/// context **per message of every actor**, and two of the three ids have a
+/// stable source it can share rather than re-allocate: `execution_id` from the
+/// delivery's correlation, `node_id` from the actor's stable spawn-time id. With
+/// `Arc<str>` those per-message copies are refcount bumps, not allocations.
+/// (Only `task_id` is freshly minted per message.) This matches the principle
+/// the output-ports RFC set for `Arc<str>` — worth it precisely when cloned per
+/// message.
 #[derive(Clone, Debug)]
 pub struct ActorContext {
-  pub execution_id: String,
-  pub node_id: String,
-  pub task_id: String,
+  pub execution_id: Arc<str>,
+  pub node_id: Arc<str>,
+  pub task_id: Arc<str>,
 }
 
 impl ActorContext {
+  /// Build a context. Accepts anything convertible to `Arc<str>`, so callers can
+  /// pass `&str` literals (tests), an owned `String`, or — the hot path — an
+  /// already-shared `Arc<str>` (correlation / node id), where the conversion is
+  /// a refcount bump rather than an allocation.
   pub fn new(
-    execution_id: impl Into<String>,
-    node_id: impl Into<String>,
-    task_id: impl Into<String>,
+    execution_id: impl Into<Arc<str>>,
+    node_id: impl Into<Arc<str>>,
+    task_id: impl Into<Arc<str>>,
   ) -> Self {
     Self {
       execution_id: execution_id.into(),

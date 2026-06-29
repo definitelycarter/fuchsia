@@ -13,8 +13,9 @@ We benchmark with **criterion**, targeted before/after by default: capture the a
 
 | Crate | Bench harness | What it measures |
 |-------|---------------|------------------|
-| `fuchsia-runtime` | `chain_throughput` | End-to-end throughput pushing 1k messages through a linear chain of K passthrough actors (K = 1, 4, 16). Includes spawn + teardown. |
-| `fuchsia-runtime` | `fan_out` | End-to-end throughput pushing 1k messages through one passthrough that fans out to W sinks (W = 2, 8, 32). Throughput is per input message; divide by W for per-edge cost. |
+| `fuchsia-runtime` | `runtime` | The recv→handle→ack hot path: `runtime/spawn` (instantiate + `setup` an actor), `runtime/deliver` (enqueue one message), `runtime/roundtrip` (full deliver→handle of one message through the tokio task hop). |
+| `fuchsia-actor-builtins` | `conditioning` | The native conditioning operators' `handle` in isolation — `builtins/passthrough_handle` (pure forward) and `builtins/dedup_handle` (suppress-duplicate state). Just the actor's per-message work, no engine/runtime. |
+| `fuchsia-runtime` | `context` | The per-delivery `ActorContext` build in isolation (`context/per_message`) — the construction the recv→handle loop does for every message: `execution_id` from the correlation, `node_id` shared from the actor's stable id, `task_id` minted fresh. Times only the context build, so the allocation profile is visible (e.g. the `Arc<str>` ids change). |
 | `fuchsia-engine` | `routing` | The routing hot path in isolation — `RoutedEmit::emit` → `RouterState::route` plus the per-port counter bump, via the `Engine::emit_sink` bench seam (no actor task / recv loop). `route_single`; `route_fanout/{1,4,16}` (per-port fan-out); `route_concurrent/{2,4,8}` (N threads emitting in parallel — the contention shape that motivated the lock-free counter design). |
 
 Run a single harness once they exist:
@@ -29,11 +30,11 @@ Use this to pick which benches to run for a given change. **Widen when uncertain
 
 | Source area | Run these benches |
 |-------------|-------------------|
-| `crates/fuchsia-actor/src/channel.rs` | `fuchsia-runtime::chain_throughput`, `fuchsia-runtime::fan_out` |
-| `crates/fuchsia-actor/src/actor.rs` (trait shape, `async-trait` boxing) | `fuchsia-runtime::chain_throughput` |
-| `crates/fuchsia-runtime/src/orchestrator.rs` | `fuchsia-runtime::chain_throughput`, `fuchsia-runtime::fan_out` |
-| `crates/fuchsia-runtime/src/registry.rs` (instantiate path) | `fuchsia-runtime::chain_throughput` |
+| `crates/fuchsia-actor/src/actor.rs` (trait shape, `async-trait` boxing) | `fuchsia-runtime::runtime` (the recv→handle loop) |
+| `crates/fuchsia-actor/src/actor.rs` (`ActorContext` shape / id types) + `crates/fuchsia-runtime/src/runtime.rs` (`run_actor` per-message context build) | `fuchsia-runtime::context`, `fuchsia-runtime::runtime` (the `runtime/roundtrip` group) |
+| `crates/fuchsia-runtime/src/registry.rs` (instantiate path) | `fuchsia-runtime::runtime` (the `runtime/spawn` group) |
 | `crates/fuchsia-engine/src/router.rs` (routing table, route, counters) | `fuchsia-engine::routing` |
+| `crates/fuchsia-actor-builtins/src/{passthrough,dedup,…}.rs` (conditioning operators' `handle`) | `fuchsia-actor-builtins::conditioning` |
 
 Not yet covered (consider adding harnesses when these areas change materially):
 

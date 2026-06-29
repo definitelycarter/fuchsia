@@ -32,7 +32,7 @@ impl Actor for Relay {
     Ok(())
   }
   async fn handle(&mut self, ctx: &ActorContext, msg: Message) -> Result<(), ActorError> {
-    self.seen.lock().unwrap().push(ctx.execution_id.clone());
+    self.seen.lock().unwrap().push(ctx.execution_id.to_string());
     self.emit.emit(msg);
     self.notify.notify_one();
     Ok(())

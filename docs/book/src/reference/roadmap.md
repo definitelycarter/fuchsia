@@ -44,7 +44,6 @@ lands (no strikethrough).
 
 | Question | Context |
 |----------|---------|
-| Should `ActorContext` ids be `Arc<str>`? | The per-delivery context build ([correlation id](../rfcs/message-correlation-id.md)) now clones `node_id` per message in the runtime loop, on top of the guest hosts' clones. Trivial individually; could compound. Not yet profiled. |
 | Machine-readable schema for actor configs | Each actor dictates its own `settings` type; no schema for tooling/plugin-store UI. Could derive via `schemars`. |
 | Replay / in-flight inspection | Should the runtime support observing messages in mailboxes for debugging? |
 | Routing counters' surface | The engine now tracks per-`(node, port)` `delivered`/`shed`/`no_route` counts in-process ([named output ports](../rfcs/output-ports.md)); whether they graduate to a metrics/trace export is a later observability decision. |

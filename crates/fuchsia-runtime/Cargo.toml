@@ -18,3 +18,7 @@ serde_json = "1"
 [[bench]]
 name    = "runtime"
 harness = false
+
+[[bench]]
+name    = "context"
+harness = false

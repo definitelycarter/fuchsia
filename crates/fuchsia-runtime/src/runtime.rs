@@ -41,11 +41,13 @@ impl Runtime {
   }
 
   fn context(actor_id: &ActorId) -> ActorContext {
-    ActorContext::new(
-      actor_id.to_string(),
-      actor_id.to_string(),
-      actor_id.to_string(),
-    )
+    // Built once per actor at spawn time. The `node_id` is the actor's stable
+    // identity that every per-message context shares (an `Arc::clone` — a
+    // refcount bump, not a re-allocation); we allocate the `Arc<str>` once here.
+    let id: Arc<str> = Arc::from(actor_id.to_string());
+    // Refcount bumps of the one allocation — the spawn-time context is built once
+    // per actor, so the cost is negligible; the three fields share storage.
+    ActorContext::new(id.clone(), id.clone(), id)
   }
 
   /// Build an actor and its mailbox **without** running `setup` or registering
@@ -223,11 +225,18 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
       tracing::debug_span!(parent: &parent, "actor.handle", node = %ctx.node_id, kind = %msg.type_);
 
     // Build a **per-delivery** context, finally giving the three id fields
-    // distinct meanings: `node_id` static (which actor — cloned from the stable
-    // spawn-time id), `execution_id` the run this message belongs to (the
-    // delivery's correlation), `task_id` this handling (a fresh per-message id).
-    // This is the one behavior change — context is per-delivery, not per-actor.
-    let msg_ctx = ActorContext::new(correlation.to_string(), ctx.node_id.clone(), next_task_id());
+    // distinct meanings: `node_id` static (which actor — the stable spawn-time
+    // id), `execution_id` the run this message belongs to (the delivery's
+    // correlation), `task_id` this handling (a fresh per-message id).
+    //
+    // Both shared ids are `Arc<str>` refcount bumps, not allocations:
+    // `execution_id` is the correlation's inner arc (taken *now*, before
+    // `correlation.scope(...)` below moves the correlation), and `node_id` is an
+    // `Arc::clone` of the actor's stable id. Only `task_id` is a genuine fresh
+    // allocation — the one id with no stable source to share.
+    let execution_id = correlation.as_arc(); // refcount bump, before the move below
+    let node_id = Arc::clone(&ctx.node_id); // refcount bump of the stable spawn-time id
+    let msg_ctx = ActorContext::new(execution_id, node_id, next_task_id());
 
     // Enter the correlation for the handle — a task-local mirroring the span, so
     // emits the actor makes inside `handle` capture this run id and propagate it
@@ -243,10 +252,11 @@ async fn run_actor(mut actor: Box<dyn Actor>, ctx: ActorContext, mut rx: Mailbox
 }
 
 /// A fresh, process-unique task id for one `handle` invocation. Monotonic, so
-/// each message's `task_id` is distinct.
-fn next_task_id() -> String {
+/// each message's `task_id` is distinct. This is the single genuine per-message
+/// allocation in the context (the other two ids are shared `Arc<str>`s).
+fn next_task_id() -> Arc<str> {
   static NEXT: AtomicU64 = AtomicU64::new(1);
-  format!("task-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+  Arc::from(format!("task-{}", NEXT.fetch_add(1, Ordering::Relaxed)))
 }
 
 #[cfg(test)]
