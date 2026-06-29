@@ -78,3 +78,4 @@ The first two are foundational — the rest build on them.
 | [DAG Enforcement](./dag-enforcement.md) | proposed | `add_edge` rejects cycle-creating edges — fuchsia graphs are acyclic (what lets graceful-shutdown's topological drain terminate). |
 | [Runs & Result Correlation](./runs-and-results.md) | proposed | Persistent graph; runs are correlation-tagged, fire-and-forget messages; optional async result via a respond node. |
 | [JavaScript Actor (QuickJS)](./javascript-actor.md) | proposed | Dynamic JS scripts in an embedded QuickJS interpreter (no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm stays as the hardened alternative. |
+| [`from_fn` Actors & Default Lifecycle](./from-fn-actors.md) | proposed | Default no-op `setup`/`teardown` so an actor is just a `handle`, plus `from_fn`/`register_fn` to write a node as a closure — no struct, impl, or creator. |

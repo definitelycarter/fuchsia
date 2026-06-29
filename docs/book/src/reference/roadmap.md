@@ -18,6 +18,7 @@ lands (no strikethrough).
 | Capability-style device binding | Bind each actor instance to one host-side device handle (BLE/MQTT/…) so guest-side functions never name addresses | host crates, per-capability WIT |
 | Enforce DAG (reject cycle-creating edges) | `add_edge` rejects an edge that would create a cycle — fuchsia graphs are acyclic. Chosen over cycle support; it's what makes graceful-shutdown's topological drain terminate. See [RFC](../rfcs/dag-enforcement.md). | `fuchsia-engine` |
 | Distributed actors | Patterns + sample host code for splitting a graph across processes via transport actors | likely host docs, not core |
+| `from_fn` actors & default lifecycle | Default no-op `setup`/`teardown` so an actor is just a `handle`; `from_fn`/`register_fn` to write a node as a closure (no struct/impl/creator). See [RFC](../rfcs/from-fn-actors.md). | `fuchsia-actor` |
 
 ## Gaps
 

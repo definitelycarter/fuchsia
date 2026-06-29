@@ -31,3 +31,4 @@
 - [DAG Enforcement](./rfcs/dag-enforcement.md)
 - [Runs & Result Correlation](./rfcs/runs-and-results.md)
 - [JavaScript Actor (QuickJS)](./rfcs/javascript-actor.md)
+- [`from_fn` Actors & Default Lifecycle](./rfcs/from-fn-actors.md)
