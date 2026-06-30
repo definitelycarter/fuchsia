@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuchsia_actor::{
-  ActorCapabilities, ActorConfig, ActorCreator, ActorId, Emit, Message, OutputPorts,
-};
+use fuchsia_actor::{ActorCapabilities, ActorConfig, ActorCreator, ActorId, Message, OutputPorts};
+// Only the gated `emit_sink` bench seam names the `Emit` trait directly.
+#[cfg(feature = "internal-bench")]
+use fuchsia_actor::Emit;
 use fuchsia_runtime::{RestartControl, Runtime, RuntimeError};
 use fuchsia_transport::{Ack, CorrelationId, Delivery, Health, MailboxTx, Outcome};
 use tokio::sync::{Mutex, oneshot};
@@ -123,7 +124,17 @@ impl Engine {
       let mut runtime = self.runtime.lock().await;
       runtime.prepare(id.clone(), type_name, config, caps)?
     };
-    spawning.setup().await?;
+    // The actor's own `setup` is awaited here (so `add_node` returns its error and
+    // the node is ready on return); a child `actor.setup` span times it — it may
+    // do I/O — under the `add_node` call. `.instrument(..)` enters it across the
+    // await. The rebuild-time setup is traced separately, under `node.restart`.
+    {
+      use tracing::Instrument as _;
+      spawning
+        .setup()
+        .instrument(tracing::debug_span!("actor.setup", node = %id))
+        .await?;
+    }
     // `commit` hands back the node's declared output ports (from its resolved
     // creator) alongside the mailbox/health, plus — for a restart-enabled node —
     // a `RestartControl` the engine retains to drive `restart_node`.
@@ -210,7 +221,11 @@ impl Engine {
           handle.health.clone(),
           handle.output_ports.clone(),
         );
-      handle.control.request_restart(false);
+      // The rebuild runs detached on the supervisor task; open its own
+      // `node.restart` trace, linked to this call, and hand it across.
+      handle
+        .control
+        .request_restart(false, Self::node_restart_span(id, false));
       return Ok(());
     }
 
@@ -222,8 +237,27 @@ impl Engine {
         id.clone(),
       )));
     }
-    handle.control.request_restart(true);
+    handle
+      .control
+      .request_restart(true, Self::node_restart_span(id, true));
     Ok(())
+  }
+
+  /// Open the `node.restart` span for a manual restart — a new trace root
+  /// (`parent: None`) that `follows_from` the `restart_node` call, so the
+  /// detached rebuild on the supervisor task forms its own trace linked back to
+  /// the operator's call. Keyed on the node: there is no correlation id on the
+  /// control plane, so the node id + the link are the correlator.
+  fn node_restart_span(id: &ActorId, force: bool) -> tracing::Span {
+    let span = tracing::info_span!(
+      parent: None,
+      "node.restart",
+      node = %id,
+      force = force,
+      trigger = "manual",
+    );
+    span.follows_from(tracing::Span::current().id());
+    span
   }
 
   /// Add a directed edge from `from`'s named output `port` to `to`'s mailbox.
@@ -303,9 +337,11 @@ impl Engine {
   /// `.emit_to(port, msg)` on it runs exactly the routing hot path (`route` +
   /// the per-port counter bump) *without* the actor task or the recv loop.
   ///
-  /// Exposed only as a **benchmarking seam** — `#[doc(hidden)]`, not part of the
-  /// supported surface — so the routing path can be measured in isolation. The
+  /// Exposed only as a **benchmarking seam**: gated behind the `internal-bench`
+  /// feature (which only the `routing` bench enables) and `#[doc(hidden)]`, so it
+  /// is *not* part of the public API — it's compiled out of a normal build. The
   /// node need not exist as a target; the sink simply routes from `source`'s id.
+  #[cfg(feature = "internal-bench")]
   #[doc(hidden)]
   pub fn emit_sink(&self, source: ActorId) -> Arc<dyn Emit> {
     // Refcount bump on the shared router handle so the sink can outlive this
@@ -414,15 +450,14 @@ impl Engine {
   /// the id rather than minting-and-returning lets a trigger register its result
   /// collector *before* the run starts, so a fast run can't finish first.
   ///
-  /// Instrumented as the run's **root** [`tracing`] span (`name = "run"`), keyed
-  /// on the correlation. The id arrives as an explicit argument here (the one
-  /// place it is not a task-local), so the field is `%id` straight from the
-  /// parameter. The span is entered for the synchronous body, so the
-  /// `Delivery::with_correlation` below captures it as `Span::current()` — every
-  /// downstream `actor.handle` then parents under this root, and a subscriber can
-  /// group the whole run by `correlation`.
+  /// The trigger itself is a child of the caller's span (`name = "engine.push"`),
+  /// so a webhook handler that calls `push` keeps this synchronous handoff under
+  /// the request — where it belongs. The run's *processing*, though, is opened as
+  /// a **new trace root** by [`run_rooted_delivery`](Self::run_rooted_delivery)
+  /// and only `follows_from` the request, so the fire-and-forget actor work
+  /// downstream isn't billed to the request's latency.
   #[tracing::instrument(
-    name = "run",
+    name = "engine.push",
     skip_all,
     fields(correlation = %id, entrypoint = %entrypoint),
   )]
@@ -436,12 +471,44 @@ impl Engine {
     let (mailbox, health) = state
       .target(entrypoint)
       .ok_or_else(|| EngineError::NotFound(entrypoint.clone()))?;
-    let _ = mailbox.offer(Delivery::with_correlation(
+    let _ = mailbox.offer(Self::run_rooted_delivery(
+      entrypoint,
       msg,
       Ack::Health(health.clone()),
       id,
     ));
     Ok(())
+  }
+
+  /// Build the entrypoint delivery for a run, rooted in a fresh `run` **trace**.
+  ///
+  /// This is the "first offer starts its own span" seam. The `run` span is opened
+  /// with `parent: None` — a *new trace*, not a child of the triggering request —
+  /// and `follows_from` the trigger span instead, so the fire-and-forget actor
+  /// work downstream forms its own trace (timed honestly) rather than nesting
+  /// under the request and inflating its apparent latency. The delivery captures
+  /// `run` as its span (`with_correlation` reads `Span::current()`), so every
+  /// downstream `actor.handle` / `engine.route` chains under `run`; the link is
+  /// what lets you navigate request → run.
+  fn run_rooted_delivery(
+    entrypoint: &ActorId,
+    msg: Message,
+    ack: Ack,
+    id: CorrelationId,
+  ) -> Delivery {
+    let run = tracing::info_span!(
+      parent: None,
+      "run",
+      correlation = %id,
+      entrypoint = %entrypoint,
+    );
+    // Causal link back to the trigger (the request span) without nesting under it.
+    run.follows_from(tracing::Span::current().id());
+    // Enter `run` only to stamp it onto the delivery (`with_correlation` reads
+    // `Span::current()`); the guard drops at return, but the delivery's captured
+    // clone keeps `run` alive across the mailbox hop.
+    let _enter = run.enter();
+    Delivery::with_correlation(msg, ack, id)
   }
 
   /// Deliver an external event into an entrypoint's mailbox and **await the
@@ -512,12 +579,14 @@ impl Engine {
   /// it back in here. `0` is normalized to `1` (a delivery is always at least
   /// one attempt). Outcomes are identical to `push_durable`.
   ///
-  /// Like [`push`](Self::push), the run's **root** `run` span — keyed on the
-  /// correlation, plus the re-delivery `attempt`. Async, so the span also spans
-  /// the awaited outcome (the at-least-once delivered/handled/lost result lands
-  /// under this root).
+  /// Like [`push`](Self::push), the trigger is a child of the caller's span
+  /// (`name = "engine.push_durable"`); because this form *awaits* the entrypoint
+  /// outcome, that span legitimately spans the wait — request work. The run's
+  /// processing is still a separate trace root (via
+  /// [`run_rooted_delivery`](Self::run_rooted_delivery)), linked back, so the
+  /// await shows the latency while the work lives in the run's own trace.
   #[tracing::instrument(
-    name = "run",
+    name = "engine.push_durable",
     skip_all,
     fields(correlation = %id, entrypoint = %entrypoint, attempt = attempt),
   )]
@@ -547,7 +616,9 @@ impl Engine {
     // `rx` observes a closed channel — the documented retry-on-loss signal.
     let (tx, rx) = oneshot::channel::<Outcome>();
     mailbox
-      .send(Delivery::with_correlation(msg, Ack::Complete(tx), id).with_attempts(attempt))
+      .send(
+        Self::run_rooted_delivery(entrypoint, msg, Ack::Complete(tx), id).with_attempts(attempt),
+      )
       .await
       .map_err(|_| EngineError::Undelivered)?;
 

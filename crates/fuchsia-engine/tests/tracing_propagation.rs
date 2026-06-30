@@ -24,13 +24,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fuchsia_actor::{
-  Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Message,
-  async_trait,
+  Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Backoff,
+  FailurePolicy, Message, async_trait,
 };
 use fuchsia_actor_builtins::PassthroughCreator;
 use fuchsia_engine::CorrelationId;
 use fuchsia_engine::Engine;
 use tokio::sync::Notify;
+use tracing::Instrument;
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
@@ -82,13 +83,18 @@ impl Visit for FieldVisitor {
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Spans {
   fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-    // The explicit `parent:` if set (handle spans), else the contextual parent
-    // (the entered root / enclosing span), else none.
-    let parent = attrs
-      .parent()
-      .cloned()
-      .or_else(|| ctx.current_span().id().cloned())
-      .map(|p| p.into_u64());
+    // A `parent: None` span (the `run` root) is explicitly root — record no
+    // parent, even though a span is current when it's created. Otherwise: the
+    // explicit `parent:` if set (handle spans), else the contextual parent.
+    let parent = if attrs.is_root() {
+      None
+    } else {
+      attrs
+        .parent()
+        .cloned()
+        .or_else(|| ctx.current_span().id().cloned())
+        .map(|p| p.into_u64())
+    };
     let mut visitor = FieldVisitor::default();
     attrs.record(&mut visitor);
     self.0.lock().unwrap().insert(
@@ -125,6 +131,21 @@ impl<S: Subscriber> Layer<S> for Events {
   }
 }
 
+/// Records `follows_from` links as `(span, follows)` id pairs, so a test can
+/// assert the `run` root is *linked* to the trigger rather than nested under it.
+#[derive(Clone, Default)]
+struct Follows(Arc<Mutex<Vec<(u64, u64)>>>);
+
+impl<S: Subscriber> Layer<S> for Follows {
+  fn on_follows_from(&self, span: &Id, follows: &Id, _ctx: Context<'_, S>) {
+    self
+      .0
+      .lock()
+      .unwrap()
+      .push((span.into_u64(), follows.into_u64()));
+  }
+}
+
 /// Terminal actor that signals when it has handled a message.
 struct Sink(Arc<Notify>);
 #[async_trait]
@@ -147,12 +168,17 @@ impl ActorCreator for SinkCreator {
 }
 
 #[tokio::test]
-async fn trace_and_correlation_follow_a_message_across_the_mailbox_hop() {
+async fn run_is_a_linked_root_decoupled_from_the_request() {
   let spans = Spans::default();
+  let follows = Follows::default();
   // Current-thread runtime (tokio::test default) + thread-local subscriber, so
   // the spawned actor tasks share this subscriber. No level filter, so the TRACE
   // `engine.route` span is captured too.
-  let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+  let _guard = tracing::subscriber::set_default(
+    tracing_subscriber::registry()
+      .with(spans.clone())
+      .with(follows.clone()),
+  );
 
   let notify = Arc::new(Notify::new());
   let engine = Engine::new();
@@ -181,7 +207,7 @@ async fn trace_and_correlation_follow_a_message_across_the_mailbox_hop() {
     .add_default_edge(ActorId::new("a"), ActorId::new("b"))
     .unwrap();
 
-  // Push within a root span; passthrough (a) re-emits → routes to sink (b).
+  // Trigger inside a request-like root span; `push` re-emits → routes to sink.
   tracing::info_span!("ingress").in_scope(|| {
     engine
       .push(
@@ -196,8 +222,6 @@ async fn trace_and_correlation_follow_a_message_across_the_mailbox_hop() {
     .await
     .expect("sink handled the message");
 
-  // Assert the chain ingress → run → a.handle → engine.route → b.handle, and
-  // that `correlation` is the same id at every level.
   let spans = spans.0.lock().unwrap();
   let by_name = |name: &str| -> Vec<(u64, SpanInfo)> {
     spans
@@ -206,58 +230,60 @@ async fn trace_and_correlation_follow_a_message_across_the_mailbox_hop() {
       .map(|(id, i)| (*id, i.clone()))
       .collect()
   };
+  let one = |name: &str| -> (u64, SpanInfo) {
+    let mut v = by_name(name);
+    assert_eq!(v.len(), 1, "exactly one `{name}` span");
+    v.pop().unwrap()
+  };
 
-  let ingress = spans
-    .iter()
-    .find(|(_, i)| i.name == "ingress" && i.parent.is_none())
-    .map(|(id, _)| *id)
-    .expect("ingress root span");
-
-  let runs = by_name("run");
-  assert_eq!(runs.len(), 1, "one run span");
-  let (run_id, run_info) = &runs[0];
+  // Request side: the trigger stays *under* the request (ingress → engine.push).
+  let (ingress, _) = one("ingress");
+  let (push_id, push_info) = one("engine.push");
   assert_eq!(
-    run_info.parent,
+    push_info.parent,
     Some(ingress),
-    "run is parented by the ingress root"
+    "engine.push (the trigger) is a child of the request"
+  );
+
+  // The run is its **own trace root** — not nested under the request — linked
+  // back to the trigger via follows_from.
+  let (run_id, run_info) = one("run");
+  assert_eq!(
+    run_info.parent, None,
+    "run is a root span (its own trace), not a child of the request"
+  );
+  assert!(
+    follows.0.lock().unwrap().contains(&(run_id, push_id)),
+    "run follows_from engine.push — linked, not nested"
   );
   let cid = run_info
     .field("correlation")
     .expect("run records the correlation field")
     .to_owned();
 
+  // Processing chains under `run`: run → a.handle → engine.route → b.handle,
+  // with the same correlation throughout — and crucially *not* under the request.
   let handles = by_name("actor.handle");
   assert_eq!(handles.len(), 2, "one handle span per actor");
   let (a_handle, a_info) = handles
     .iter()
-    .find(|(_, i)| i.parent == Some(*run_id))
-    .expect("upstream handle is parented by the run root");
-  assert_eq!(
-    a_info.field("correlation"),
-    Some(cid.as_str()),
-    "a.handle records the same correlation"
-  );
+    .find(|(_, i)| i.parent == Some(run_id))
+    .expect("upstream handle is parented by the run root, not the request");
+  assert_eq!(a_info.field("correlation"), Some(cid.as_str()));
 
-  let routes = by_name("engine.route");
-  let (route_id, route_info) = routes
-    .iter()
-    .find(|(_, i)| i.parent == Some(*a_handle))
-    .expect("engine.route is parented by the upstream handle");
+  let (route_id, route_info) = one("engine.route");
   assert_eq!(
-    route_info.field("correlation"),
-    Some(cid.as_str()),
-    "engine.route records the same correlation"
+    route_info.parent,
+    Some(*a_handle),
+    "engine.route is parented by the upstream handle"
   );
+  assert_eq!(route_info.field("correlation"), Some(cid.as_str()));
 
   let (_b_handle, b_info) = handles
     .iter()
-    .find(|(_, i)| i.parent == Some(*route_id))
+    .find(|(_, i)| i.parent == Some(route_id))
     .expect("downstream handle is parented by engine.route — trace crossed the hop");
-  assert_eq!(
-    b_info.field("correlation"),
-    Some(cid.as_str()),
-    "b.handle records the same correlation"
-  );
+  assert_eq!(b_info.field("correlation"), Some(cid.as_str()));
 }
 
 #[tokio::test]
@@ -307,6 +333,22 @@ async fn control_plane_spans_carry_topology_fields() {
   assert!(
     add_nodes.iter().all(|i| i.fields.contains_key("node")),
     "add_node records the node id"
+  );
+
+  // actor.setup: one per node, a *child* of its add_node span — setup is awaited
+  // inside add_node, so it nests under the call rather than detaching.
+  let add_node_ids: Vec<u64> = spans
+    .iter()
+    .filter(|(_, i)| i.name == "add_node")
+    .map(|(id, _)| *id)
+    .collect();
+  let setups: Vec<&SpanInfo> = spans.values().filter(|i| i.name == "actor.setup").collect();
+  assert_eq!(setups.len(), 2, "one actor.setup span per node");
+  assert!(
+    setups
+      .iter()
+      .all(|i| i.parent.is_some_and(|p| add_node_ids.contains(&p))),
+    "actor.setup nests under its add_node call"
   );
 
   // add_edge: the default-port wiring records from/port/to, port == "out".
@@ -380,5 +422,135 @@ async fn emit_no_route_event_fires_on_an_unwired_emit() {
   panic!(
     "emit.no_route never fired; events: {:?}",
     events.0.lock().unwrap()
+  );
+}
+
+#[tokio::test]
+async fn restart_node_rebuild_is_a_linked_node_restart_trace() {
+  let spans = Spans::default();
+  let follows = Follows::default();
+  let _guard = tracing::subscriber::set_default(
+    tracing_subscriber::registry()
+      .with(spans.clone())
+      .with(follows.clone()),
+  );
+
+  let engine = Engine::new();
+  engine.register("passthrough", PassthroughCreator).await;
+  // A restart-enabled node (max_restarts > 0) so it has a supervisor + control.
+  let cfg = ActorConfig {
+    failure: FailurePolicy::restart(2, Backoff::fixed(Duration::from_millis(1))),
+    ..Default::default()
+  };
+  engine
+    .add_node(
+      ActorId::new("n"),
+      "passthrough",
+      &cfg,
+      ActorCapabilities::new(),
+    )
+    .await
+    .unwrap();
+
+  // Force-restart inside a request-like span: the *call* is a child of it; the
+  // rebuild it triggers runs detached on the supervisor task.
+  engine
+    .restart_node(&ActorId::new("n"), true)
+    .instrument(tracing::info_span!("admin"))
+    .await
+    .unwrap();
+  // Let the supervisor actually run the rebuild under the carried span.
+  tokio::time::sleep(Duration::from_millis(50)).await;
+
+  let spans = spans.0.lock().unwrap();
+  let by_name = |name: &str| -> Vec<(u64, SpanInfo)> {
+    spans
+      .iter()
+      .filter(|(_, i)| i.name == name)
+      .map(|(id, i)| (*id, i.clone()))
+      .collect()
+  };
+
+  // The call: `restart_node`, a child of the request span.
+  let restart_calls = by_name("restart_node");
+  assert_eq!(restart_calls.len(), 1, "one restart_node span");
+  let (restart_id, _) = restart_calls[0];
+
+  // The rebuild: `node.restart`, its own trace root, linked to the call.
+  let node_restarts = by_name("node.restart");
+  assert_eq!(node_restarts.len(), 1, "one node.restart span");
+  let (nr_id, nr_info) = &node_restarts[0];
+  assert_eq!(
+    nr_info.parent, None,
+    "node.restart is a root (its own trace), not nested under the call"
+  );
+  assert_eq!(nr_info.field("node"), Some("n"));
+  assert_eq!(nr_info.field("trigger"), Some("manual"));
+  assert!(
+    follows.0.lock().unwrap().contains(&(*nr_id, restart_id)),
+    "node.restart follows_from restart_node — linked, not nested"
+  );
+}
+
+#[tokio::test]
+async fn remove_graph_tears_down_each_node_in_its_own_span() {
+  let spans = Spans::default();
+  let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+
+  let engine = Engine::new();
+  engine.register("passthrough", PassthroughCreator).await;
+  engine
+    .add_node(
+      ActorId::scoped("g", "a"),
+      "passthrough",
+      &ActorConfig::default(),
+      ActorCapabilities::new(),
+    )
+    .await
+    .unwrap();
+  engine
+    .add_node(
+      ActorId::scoped("g", "b"),
+      "passthrough",
+      &ActorConfig::default(),
+      ActorCapabilities::new(),
+    )
+    .await
+    .unwrap();
+  // remove_graph returns immediately; the teardowns run detached on the actor
+  // tasks. Poll until both node.teardown spans appear.
+  engine.remove_graph("g").await.unwrap();
+  for _ in 0..100 {
+    let n = spans
+      .0
+      .lock()
+      .unwrap()
+      .values()
+      .filter(|i| i.name == "node.teardown")
+      .count();
+    if n >= 2 {
+      break;
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+  }
+
+  let spans = spans.0.lock().unwrap();
+  let teardowns: Vec<&SpanInfo> = spans
+    .values()
+    .filter(|i| i.name == "node.teardown")
+    .collect();
+  assert_eq!(
+    teardowns.len(),
+    2,
+    "one node.teardown span per torn-down node; got {teardowns:?}"
+  );
+  assert!(
+    teardowns.iter().all(|i| i.parent.is_none()),
+    "each node.teardown is its own root span (decoupled from the remove_graph call)"
+  );
+  let nodes: Vec<&str> = teardowns.iter().filter_map(|i| i.field("node")).collect();
+  assert!(
+    nodes.contains(&"g/a") && nodes.contains(&"g/b"),
+    "teardown spans carry their node ids; got {nodes:?}"
   );
 }

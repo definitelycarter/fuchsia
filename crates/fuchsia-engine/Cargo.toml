@@ -21,6 +21,13 @@ criterion            = { version = "0.5", features = ["html_reports"] }
 tokio                = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tracing-subscriber.workspace = true
 
+[features]
+# Exposes `Engine::emit_sink`, an internal routing-bench seam — deliberately NOT
+# part of the public API. Only the `routing` bench enables it (below), so a
+# normal build / downstream dependant never sees it.
+internal-bench = []
+
 [[bench]]
-name    = "routing"
-harness = false
+name             = "routing"
+harness          = false
+required-features = ["internal-bench"]

@@ -27,8 +27,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use fuchsia_actor::{
-  Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId,
-  COMPONENT_ENV_KEY, Message, MessageValue, async_trait,
+  Actor, ActorCapabilities, ActorConfig, ActorContext, ActorCreator, ActorError, ActorId, Backoff,
+  COMPONENT_ENV_KEY, FailurePolicy, Message, MessageValue, async_trait,
 };
 use fuchsia_actor_builtins::DedupCreator;
 use fuchsia_actor_lua::{BaseLuaHost, LuaActorCreator};
@@ -163,13 +163,14 @@ async fn main() {
     )
     .await
     .expect("add lua node");
+  // dedup opts into restart so it can be force-restarted below — the restart
+  // goes through its supervisor's RestartControl.
+  let dedup_cfg = ActorConfig {
+    failure: FailurePolicy::restart(3, Backoff::fixed(Duration::from_millis(1))),
+    ..Default::default()
+  };
   engine
-    .add_node(
-      dedup.clone(),
-      "dedup",
-      &ActorConfig::default(),
-      ActorCapabilities::new(),
-    )
+    .add_node(dedup.clone(), "dedup", &dedup_cfg, ActorCapabilities::new())
     .await
     .expect("add dedup node");
   engine
@@ -250,4 +251,20 @@ async fn main() {
     "dedup should have dropped the repeated reading"
   );
   println!("✓ lua computed °F, the dedup builtin dropped the repeat, and wasm wrapped the rest.");
+
+  // ── Lifecycle ops emit their own decoupled traces ────────────────────────
+  // A force-restart's *call* is synchronous, but the rebuild it triggers runs
+  // detached on the supervisor task — so it gets its own `node.restart` span,
+  // linked (follows_from) back to the call. Tearing the graph down then runs
+  // each actor's teardown as its own `node.teardown` span. Watch the spans:
+  // `restart_node` and `node.restart` are separate, and four `node.teardown`s
+  // appear after `remove_graph` returns.
+  println!("\n── lifecycle: force-restart `dedup`, then remove the graph ──");
+  engine
+    .restart_node(&dedup, true)
+    .await
+    .expect("force-restart dedup");
+  tokio::time::sleep(Duration::from_millis(20)).await; // let the rebuild run
+  engine.remove_graph("demo").await.expect("remove graph");
+  tokio::time::sleep(Duration::from_millis(20)).await; // let the teardowns run
 }

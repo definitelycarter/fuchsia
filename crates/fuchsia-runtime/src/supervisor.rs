@@ -61,6 +61,7 @@ use fuchsia_transport::{
 };
 use futures_util::FutureExt;
 use tokio::sync::Notify;
+use tracing::Instrument;
 
 use crate::registry::{ActorHandle, ActorRegistry};
 use crate::runtime::{DeathListener, FailureSinks, handle_with_policy, poison_check};
@@ -128,6 +129,12 @@ struct RestartControlInner {
   /// revive). Read by `Engine::restart_node` to tell a dead node (revive) from a
   /// live one (force-only) without racing the supervisor.
   parked_dead: AtomicBool,
+  /// The `node.restart` span a manual `Engine::restart_node` opened for the
+  /// rebuild it triggered (already `follows_from` the call). Handed here so the
+  /// supervisor can enter it around the *detached* rebuild on its own task —
+  /// linking the rebuild's trace back to the operator's call. `None` for an
+  /// automatic (crash-driven) restart, which opens its own fresh root instead.
+  pending_trigger: Mutex<Option<tracing::Span>>,
 }
 
 impl RestartControl {
@@ -137,6 +144,7 @@ impl RestartControl {
         revive: Notify::new(),
         force: AtomicBool::new(false),
         parked_dead: AtomicBool::new(false),
+        pending_trigger: Mutex::new(None),
       }),
     }
   }
@@ -151,9 +159,18 @@ impl RestartControl {
   /// rebuild); without it, only a dead (parked) node is revived — the engine
   /// rejects a force-less restart of a live node *before* calling this. Either
   /// way the budget is reset. Wakes the supervisor.
-  pub fn request_restart(&self, force: bool) {
+  ///
+  /// `trigger` is the `node.restart` span the caller opened for the (detached)
+  /// rebuild — stashed so the supervisor enters it around the rebuild, tying the
+  /// rebuild trace back to the call.
+  pub fn request_restart(&self, force: bool, trigger: tracing::Span) {
     if force {
       self.inner.force.store(true, Ordering::SeqCst);
+    }
+    // Cold manual-restart path; a poisoned lock just means no span carries (the
+    // restart still happens, the rebuild opens its own root).
+    if let Ok(mut pending) = self.inner.pending_trigger.lock() {
+      *pending = Some(trigger);
     }
     self.inner.revive.notify_one();
   }
@@ -240,31 +257,50 @@ pub(crate) async fn supervise_with_restart(
     // setup failure on a *rebuild* is a crash (restart if budget remains).
     let actor = match initial.take() {
       Some(actor) => Some(actor),
-      None => match recipe.build() {
-        Ok(mut actor) => {
-          // `setup` for a rebuilt incarnation. A panic is caught (the actor is
-          // about to be discarded on failure anyway); a returned `Err` aborts as
-          // a build failure (restartable).
-          match AssertUnwindSafe(actor.setup(&recipe.ctx))
-            .catch_unwind()
-            .await
-          {
-            Ok(Ok(())) => Some(actor),
-            Ok(Err(err)) => {
-              tracing::error!(node = %recipe.node, error = %err, "actor setup failed on restart");
-              None
+      None => {
+        // The rebuild is the detached work a restart triggers, so give it its own
+        // `node.restart` span. A manual restart hands one in (carried from
+        // `Engine::restart_node`, already `follows_from` the call); an automatic
+        // (crash-driven) restart opens a fresh root, since there is no operator
+        // call to link to. `.instrument(..)` enters it across the `setup` await
+        // (a held `.enter()` guard would be wrong across the await).
+        let carried = match control.inner.pending_trigger.lock() {
+          Ok(mut pending) => pending.take(),
+          Err(_) => None,
+        };
+        let restart_span = carried.unwrap_or_else(|| {
+          tracing::info_span!(parent: None, "node.restart", node = %recipe.node, trigger = "auto")
+        });
+        async {
+          match recipe.build() {
+            Ok(mut actor) => {
+              // `setup` for a rebuilt incarnation. A panic is caught (the actor is
+              // about to be discarded on failure anyway); a returned `Err` aborts
+              // as a build failure (restartable).
+              match AssertUnwindSafe(actor.setup(&recipe.ctx))
+                .catch_unwind()
+                .await
+              {
+                Ok(Ok(())) => Some(actor),
+                Ok(Err(err)) => {
+                  tracing::error!(node = %recipe.node, error = %err, "actor setup failed on restart");
+                  None
+                }
+                Err(_panic) => {
+                  tracing::error!(node = %recipe.node, "actor setup panicked on restart");
+                  None
+                }
+              }
             }
-            Err(_panic) => {
-              tracing::error!(node = %recipe.node, "actor setup panicked on restart");
+            Err(err) => {
+              tracing::error!(node = %recipe.node, error = %err, "actor rebuild failed");
               None
             }
           }
         }
-        Err(err) => {
-          tracing::error!(node = %recipe.node, error = %err, "actor rebuild failed");
-          None
-        }
-      },
+        .instrument(restart_span)
+        .await
+      }
     };
 
     let outcome = match actor {
@@ -424,14 +460,22 @@ pub(crate) async fn supervise_with_restart(
 /// is being discarded either way, so a panicking or erroring `teardown` is logged
 /// and swallowed; the caller proceeds with its intended lifecycle outcome.
 async fn teardown_caught(actor: &mut Box<dyn Actor>, recipe: &RestartRecipe) {
-  match AssertUnwindSafe(actor.teardown(&recipe.ctx))
-    .catch_unwind()
-    .await
-  {
-    Ok(Ok(())) => {}
-    Ok(Err(err)) => tracing::error!(node = %recipe.node, error = %err, "actor teardown errored"),
-    Err(_panic) => tracing::error!(node = %recipe.node, "actor teardown panicked"),
+  // Teardown is detached lifecycle work — it runs when the node is stopped /
+  // removed / restarted, not under the caller that triggered it — so give it its
+  // own `node.teardown` span, a root keyed on the node.
+  let span = tracing::info_span!("node.teardown", node = %recipe.node);
+  async {
+    match AssertUnwindSafe(actor.teardown(&recipe.ctx))
+      .catch_unwind()
+      .await
+    {
+      Ok(Ok(())) => {}
+      Ok(Err(err)) => tracing::error!(node = %recipe.node, error = %err, "actor teardown errored"),
+      Err(_panic) => tracing::error!(node = %recipe.node, "actor teardown panicked"),
+    }
   }
+  .instrument(span)
+  .await
 }
 
 /// One incarnation's recv→handle loop, returning *why* it ended. Mirrors
