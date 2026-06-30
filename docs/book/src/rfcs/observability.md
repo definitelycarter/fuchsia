@@ -1,7 +1,17 @@
 # RFC: Observability — Correlation-Scoped Tracing
 
-> **Status: proposed.** Tracked in the [roadmap](../reference/roadmap.md#features)
-> Features table until it lands. Builds on
+> **Status: partially implemented.** Shipped: the data-plane spans (`run` root on
+> `push`/`push_durable`, `engine.route`, and `correlation` + `outcome` on
+> `actor.handle`), the control-plane topology spans (`add_node` / `add_edge` /
+> `remove_graph` / `restart_node`), the flow + failure events (`message.shed`,
+> `emit.no_route`, `handle.retry`, `message.poisoned`, `dead_letter` via a shared
+> `record_dead_letter` helper, `node.died`), a workspace `tracing` dependency, and
+> the `fuchsia-examples` demo subscriber. **Deferred** (tracked in the roadmap
+> Features row): `guest.handle` spans on the Wasm/Lua seam; completing the
+> `node.*` lifecycle-event family (restarting / revived / rebuild_failed /
+> teardown_failed / spawned / stopped — the supervisor still logs these ad hoc);
+> the `attempt` field on `actor.handle` and the `dead_letter` event's
+> reason-detail payload; and `schedule.fire` re-entry. Builds on
 > [Per-Message Correlation Id](./message-correlation-id.md).
 
 ## Concept

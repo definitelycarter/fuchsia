@@ -523,15 +523,28 @@ pub(crate) fn poison_check(
     attempts,
     ..
   } = delivery;
+  // The quarantine is the event — fired whether or not a sink preserves it;
+  // `dead_lettered` says which. Tagged with the run so a poison drop is traceable
+  // to the request that caused it.
+  tracing::warn!(
+    correlation = %correlation,
+    node = %sinks.node,
+    attempts = attempts,
+    dead_lettered = sinks.dead_letter.is_some(),
+    "message.poisoned",
+  );
   if let Some(sink) = sinks.dead_letter {
-    sink.dead_letter(DeadLettered::new(
-      msg,
-      correlation,
-      // Cold quarantine path — an owned id for the sink, like every other
-      // dead-letter path. A real `String` clone, paid only on a poison divert.
-      sinks.node.clone(),
-      DeadLetterReason::Poison { attempts },
-    ));
+    record_dead_letter(
+      sink,
+      DeadLettered::new(
+        msg,
+        correlation,
+        // Cold quarantine path — an owned id for the sink, like every other
+        // dead-letter path. A real `String` clone, paid only on a poison divert.
+        sinks.node.clone(),
+        DeadLetterReason::Poison { attempts },
+      ),
+    );
   } else {
     // No sink: count the poison as a distinct outcome and drop the message. The
     // `Health` here is the *node's* shared counter (not the per-delivery ack), so
@@ -544,6 +557,20 @@ pub(crate) fn poison_check(
   // *not* handled — this is the quarantine outcome, not a handle result.
   ack.report(Ok(()));
   None
+}
+
+/// Dead-letter one message: fire the `dead_letter` event (so the transition is
+/// visible in a trace, grouped by its run) **and** hand it to the sink. The one
+/// path every dead-letter goes through, so the event can never drift from the
+/// sink call. WARN — a dead letter is always a message the runtime gave up on.
+pub(crate) fn record_dead_letter(sink: &dyn DeadLetter, letter: DeadLettered) {
+  tracing::warn!(
+    correlation = %letter.correlation,
+    node = %letter.node,
+    reason = letter.reason.label(),
+    "dead_letter",
+  );
+  sink.dead_letter(letter);
 }
 
 // The default (non-restart) recv loop's ingredients — the actor, its mailbox,
@@ -687,14 +714,17 @@ pub(crate) async fn handle_with_policy(
           Err(err) => err.to_string(),
           Ok(()) => String::new(),
         };
-        sink.dead_letter(DeadLettered::new(
-          preserved,
-          correlation,
-          // Cold fail path on a dying node — an owned id for the sink. A real
-          // `String` clone, but paid once, only when a node fails with a sink.
-          node.clone(),
-          DeadLetterReason::Failed { error },
-        ));
+        record_dead_letter(
+          sink,
+          DeadLettered::new(
+            preserved,
+            correlation,
+            // Cold fail path on a dying node — an owned id for the sink. A real
+            // `String` clone, but paid once, only when a node fails with a sink.
+            node.clone(),
+            DeadLetterReason::Failed { error },
+          ),
+        );
       }
       (outcome, stop)
     }
@@ -723,6 +753,16 @@ pub(crate) async fn handle_with_policy(
           // Succeeded within budget — done; the surviving `msg` is dropped.
           return (outcome, false);
         }
+        // Errored, a retry will follow: surface it (the failed attempt is
+        // `attempt + 1`, since the loop is 0-based). No `actor.handle` span is
+        // active here — it lives inside `handle_once` — so the event carries the
+        // correlation explicitly.
+        tracing::debug!(
+          correlation = %correlation,
+          node = %node,
+          attempt = attempt + 1,
+          "handle.retry",
+        );
         // Errored with attempts remaining: wait the backoff, then retry.
         let delay = backoff.delay_for(attempt);
         if !delay.is_zero() {
@@ -749,14 +789,17 @@ pub(crate) async fn handle_with_policy(
         // produce a *duplicate* dead-letter. The node stays alive.
         (Err(err), Some(sink), Some(preserved)) => {
           let error = err.to_string();
-          sink.dead_letter(DeadLettered::new(
-            preserved,
-            correlation,
-            // Cold exhausted-retry path — an owned id for the sink. A real
-            // `String` clone, paid once, only when a retry exhausts with a sink.
-            node.clone(),
-            DeadLetterReason::RetryExhausted { attempts, error },
-          ));
+          record_dead_letter(
+            sink,
+            DeadLettered::new(
+              preserved,
+              correlation,
+              // Cold exhausted-retry path — an owned id for the sink. A real
+              // `String` clone, paid once, only when a retry exhausts with a sink.
+              node.clone(),
+              DeadLetterReason::RetryExhausted { attempts, error },
+            ),
+          );
           (Ok(()), false)
         }
         // No sink (or the final attempt unexpectedly succeeded): slice 2's
@@ -866,8 +909,19 @@ async fn handle_once(
   // actor's own emits, made inside this span, propagate it onward. DEBUG so
   // it's off the hot path unless tracing is turned up. A fresh span per attempt
   // so each retry is its own traced handling.
-  let span =
-    tracing::debug_span!(parent: parent, "actor.handle", node = %ctx.node_id, kind = %msg.type_);
+  //
+  // `correlation` is recorded as a field (not just inherited via the parent
+  // chain), so a subscriber can group every span and event by run id — the
+  // whole point of the correlation. It is an `Arc<str>` display, no allocation.
+  // `outcome` starts empty and is filled once the handle resolves (below).
+  let span = tracing::debug_span!(
+    parent: parent,
+    "actor.handle",
+    correlation = %correlation,
+    node = %ctx.node_id,
+    kind = %msg.type_,
+    outcome = tracing::field::Empty,
+  );
 
   // Build a **per-delivery** context, giving the three id fields distinct
   // meanings: `node_id` static (which actor — the stable spawn-time id),
@@ -888,8 +942,24 @@ async fn handle_once(
   // emits the actor makes inside `handle` capture this run id and propagate it
   // onward. `.instrument(span).await` enters the span for the duration of the
   // async handle without holding a `!Send` span guard across the await point.
+  // Recording `outcome` from *inside* the instrumented future
+  // (`Span::current()` is the entered handle span there) fills the field on
+  // close without cloning the span.
   correlation
-    .scope(actor.handle(&msg_ctx, msg).instrument(span))
+    .scope(
+      async move {
+        let outcome = actor.handle(&msg_ctx, msg).await;
+        tracing::Span::current().record(
+          "outcome",
+          match &outcome {
+            Ok(()) => "ok",
+            Err(_) => "error",
+          },
+        );
+        outcome
+      }
+      .instrument(span),
+    )
     .await
 }
 
@@ -945,12 +1015,15 @@ async fn supervise(
     return;
   }
 
+  // A pure node death — the task is gone, so there is no in-flight message and
+  // the event is node-keyed (no correlation). The `NodeDied` drain below
+  // re-attaches a correlation per *bystander* message it dead-letters.
   if let Err(join_err) = &join {
     // The panic was swallowed before (the `JoinHandle` was discarded); surface
     // it so a dead node is not silent.
-    tracing::error!(node = %actor_id, error = %join_err, "actor task died (panic)");
+    tracing::error!(node = %actor_id, cause = "panic", error = %join_err, "node.died");
   } else {
-    tracing::error!(node = %actor_id, "actor task exited unexpectedly");
+    tracing::warn!(node = %actor_id, cause = "abnormal_exit", "node.died");
   }
 
   record_death(

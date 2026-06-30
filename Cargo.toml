@@ -14,3 +14,10 @@ members = [
 [workspace.package]
 edition = "2024"
 version = "0.0.1-alpha.0"
+
+# Aligned in one place so every crate's spans/events speak the same `tracing`
+# version. `tracing-subscriber` is the consumer side — used by the examples
+# binary and by tracing tests; the core crates never install a subscriber.
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.3"

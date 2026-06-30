@@ -7,7 +7,7 @@ description = "Wasm-component-hosting Actor implementation for fuchsia"
 [dependencies]
 fuchsia-actor = { path = "../fuchsia-actor" }
 serde_json = "1"
-tracing = "0.1"
+tracing.workspace = true
 wasmtime = { version = "45", features = ["component-model", "async"] }
 
 [dev-dependencies]

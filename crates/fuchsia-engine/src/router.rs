@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use fuchsia_actor::{ActorId, DEFAULT_PORT, ERROR_PORT, Emit, Message, OutputPorts};
-use fuchsia_transport::{Ack, Delivery, Health, MailboxTx, Offer};
+use fuchsia_transport::{Ack, CorrelationId, Delivery, Health, MailboxTx, Offer};
 
 use crate::error::EngineError;
 
@@ -304,9 +304,36 @@ impl RouterState {
         if let Some(counter) = counter {
           counter.no_route.fetch_add(1, Ordering::Relaxed);
         }
+        // An emit on a port with no edge — counted, and surfaced as an event so
+        // a misconfigured graph (an actor emitting where nothing is wired) shows
+        // up. Correlation is implicit: this fires inside the emitting actor's
+        // `actor.handle` span, which carries it.
+        tracing::debug!(source = %source, port = port, "emit.no_route");
         return;
       }
     };
+
+    // The fan-out gets its own TRACE span so a trace shows *which port/edge*
+    // carried the message; each `Delivery::new` below captures it as its parent.
+    // TRACE keeps it off the hot path: with no TRACE subscriber the span is
+    // disabled (its `fanout`/`correlation` field work is skipped) and, crucially,
+    // a disabled span leaves `Span::current()` as the enclosing `actor.handle`,
+    // so the captured parent is exactly what it was before this span existed.
+    // The fan-out is synchronous, so a plain `enter()` guard is sound (no await
+    // between enter and drop). `correlation` comes from the task-local — `route`
+    // always runs inside the emitting actor's `correlation.scope` — and is
+    // recorded into a pre-declared `Empty` field, avoiding a mint-on-miss.
+    let span = tracing::trace_span!(
+      "engine.route",
+      correlation = tracing::field::Empty,
+      source = %source,
+      port = port,
+      fanout = successors.len(),
+    );
+    if let Some(correlation) = CorrelationId::current() {
+      span.record("correlation", tracing::field::display(&correlation));
+    }
+    let _enter = span.enter();
 
     for edge in successors {
       let outcome = match self.targets.get(&edge.to) {
@@ -327,6 +354,18 @@ impl RouterState {
           // A closed target delivered nothing — a no-route for this edge.
           Offer::Closed => counter.no_route.fetch_add(1, Ordering::Relaxed),
         };
+      }
+      // Surface the loss/no-route per edge as an event; the happy `Delivered`
+      // path is the span tree, so it gets no event. Correlation is implicit —
+      // these fire inside the `engine.route` span, which carries it.
+      match outcome {
+        Offer::Shed => {
+          tracing::warn!(source = %source, port = port, to = %edge.to, "message.shed");
+        }
+        Offer::Closed => {
+          tracing::debug!(source = %source, port = port, to = %edge.to, "emit.no_route");
+        }
+        Offer::Delivered => {}
       }
     }
   }

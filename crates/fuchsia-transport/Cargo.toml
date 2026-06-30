@@ -9,7 +9,7 @@ fuchsia-actor = { path = "../fuchsia-actor" }
 # `rt` for `tokio::task_local!` — the current-correlation task-local that rides
 # each delivery (the analog of the tracing span's task-local).
 tokio       = { version = "1", features = ["rt", "sync"] }
-tracing     = "0.1"
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

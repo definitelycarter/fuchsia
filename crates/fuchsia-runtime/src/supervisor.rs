@@ -591,15 +591,18 @@ fn dead_letter_one(recipe: &RestartRecipe, delivery: Delivery, restarts: u32) {
     ..
   } = delivery;
   if let Some(sink) = recipe.dead_letter.as_deref() {
-    sink.dead_letter(DeadLettered::new(
-      msg,
-      correlation,
-      // Cold death-drain path — an owned id per drained message for the sink. A
-      // real `String` clone, paid only when a node dies with a sink and a
-      // backlog (or a stray late arrival).
-      recipe.node.clone(),
-      DeadLetterReason::NodeDied { restarts },
-    ));
+    crate::runtime::record_dead_letter(
+      sink,
+      DeadLettered::new(
+        msg,
+        correlation,
+        // Cold death-drain path — an owned id per drained message for the sink. A
+        // real `String` clone, paid only when a node dies with a sink and a
+        // backlog (or a stray late arrival).
+        recipe.node.clone(),
+        DeadLetterReason::NodeDied { restarts },
+      ),
+    );
   }
   // The ack is dropped: a `Complete` reads as lost (the feeder retries — it
   // can't land on a dead node, so it eventually dead-letters on its own side), a

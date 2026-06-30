@@ -35,6 +35,8 @@ use fuchsia_actor_lua::{BaseLuaHost, LuaActorCreator};
 use fuchsia_actor_wasm::{BaseHost, WasmActorCreator};
 use fuchsia_engine::{CorrelationId, Engine};
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 const ECHO_WASM: &str = concat!(
   env!("CARGO_MANIFEST_DIR"),
@@ -104,6 +106,24 @@ fn component_config(id: &str) -> ActorConfig {
 
 #[tokio::main]
 async fn main() {
+  // Install a subscriber so the correlation-scoped span tree and the failure
+  // events print to stderr — the consumer side a product owns; the core crates
+  // never install one. An `EnvFilter` keeps fuchsia's own spans/events while
+  // silencing the wasm runtime's compile logs (wasmtime/cranelift log heavily via
+  // the `log` bridge, which a bare max-level can't filter by target). At the
+  // default you see the `run` root (with its `correlation`), each `actor.handle`,
+  // the `add_node`/`add_edge` spans, and the lifecycle/failure events; override
+  // with e.g. `RUST_LOG=fuchsia_engine=trace` to also see the per-edge
+  // `engine.route` spans.
+  let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+    EnvFilter::new("warn,fuchsia_engine=debug,fuchsia_runtime=debug,fuchsia_transport=debug")
+  });
+  tracing_subscriber::fmt()
+    .with_env_filter(filter)
+    .with_target(false)
+    .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+    .init();
+
   if !std::path::Path::new(ECHO_WASM).exists() {
     eprintln!(
       "echo component not built.\n\nBuild it first:\n  (cd test-components/actor-echo && \

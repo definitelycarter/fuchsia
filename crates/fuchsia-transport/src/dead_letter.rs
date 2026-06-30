@@ -135,6 +135,20 @@ pub enum DeadLetterReason {
   },
 }
 
+impl DeadLetterReason {
+  /// A stable, low-cardinality label — the `reason` field on the `dead_letter`
+  /// tracing event. The variant's detail (attempts / error / restarts) stays on
+  /// the [`DeadLettered`] for the sink; the trace carries only the category.
+  pub fn label(&self) -> &'static str {
+    match self {
+      DeadLetterReason::RetryExhausted { .. } => "retry_exhausted",
+      DeadLetterReason::Failed { .. } => "failed",
+      DeadLetterReason::NodeDied { .. } => "node_died",
+      DeadLetterReason::Poison { .. } => "poison",
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

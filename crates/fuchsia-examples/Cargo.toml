@@ -13,3 +13,10 @@ fuchsia-actor-lua = { path = "../fuchsia-actor-lua" }
 fuchsia-engine = { path = "../fuchsia-engine" }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+# The consumer side: the demo installs a subscriber so the run/route/handle span
+# tree and the failure events print. A product owns this choice; the core crates
+# never install one.
+tracing.workspace = true
+# `env-filter` so the demo can keep fuchsia's spans/events while silencing the
+# wasm runtime's compile logs (filter by target, which a bare max-level can't).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

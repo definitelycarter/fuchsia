@@ -93,6 +93,16 @@ impl Engine {
   /// engine adds the one capability it owns, `emit` (routing through this
   /// engine); the runtime adds `schedule`. The engine never inspects `caps`, so
   /// it stays binding-agnostic.
+  ///
+  /// A control-plane span (not part of any run, so no correlation): it times the
+  /// async body — including the actor's `setup`, which may do I/O — and records a
+  /// setup/commit failure via `err`.
+  #[tracing::instrument(
+    name = "add_node",
+    skip_all,
+    fields(node = %id, r#type = type_name),
+    err,
+  )]
   pub async fn add_node(
     &self,
     id: ActorId,
@@ -170,6 +180,12 @@ impl Engine {
   ///
   /// Either way a manual restart **resets** the automatic backoff/limit budget —
   /// an operator's deliberate "try again," distinct from the automatic budget.
+  #[tracing::instrument(
+    name = "restart_node",
+    skip_all,
+    fields(node = %id, force = force),
+    err,
+  )]
   pub async fn restart_node(&self, id: &ActorId, force: bool) -> Result<(), EngineError> {
     let handles = self.restart_handles.lock().await;
     // No restart handle → either the node never existed or it is a default
@@ -223,6 +239,17 @@ impl Engine {
   /// whose target already reaches its source over the existing edges
   /// ([`EngineError::Cycle`]) — leaving the graph unchanged, so a running graph
   /// is always acyclic.
+  ///
+  /// A control-plane span. DEBUG (graph assembly can wire many edges), and the
+  /// rejection (`Cycle` / `UnknownPort`) is recorded at DEBUG too — a rejected
+  /// edge is validation, not a fault, so it must not cry ERROR.
+  #[tracing::instrument(
+    name = "add_edge",
+    skip_all,
+    fields(from = %from, port = port, to = %to),
+    level = "debug",
+    err(level = "debug"),
+  )]
   pub fn add_edge(&self, from: ActorId, port: &str, to: ActorId) -> Result<(), EngineError> {
     self
       .router
@@ -293,12 +320,22 @@ impl Engine {
   /// Scoped to the group — other graphs are untouched. Cross-group edges into
   /// this group simply stop resolving (a graceful drop), so the assembler is
   /// free to remove a graph whether or not others still reference it.
+  ///
+  /// A control-plane span timing the whole group teardown; `nodes` records how
+  /// many live nodes were stopped (filled once the group is resolved).
+  #[tracing::instrument(
+    name = "remove_graph",
+    skip_all,
+    fields(group = group, nodes = tracing::field::Empty),
+    err,
+  )]
   pub async fn remove_graph(&self, group: &str) -> Result<(), EngineError> {
     let ids = self
       .router
       .read()
       .map_err(|_| EngineError::Lock)?
       .ids_in_group(group);
+    tracing::Span::current().record("nodes", ids.len());
 
     {
       let mut runtime = self.runtime.lock().await;
@@ -344,6 +381,19 @@ impl Engine {
   /// existing id (an external request/trace id, or a parent run's id). Taking
   /// the id rather than minting-and-returning lets a trigger register its result
   /// collector *before* the run starts, so a fast run can't finish first.
+  ///
+  /// Instrumented as the run's **root** [`tracing`] span (`name = "run"`), keyed
+  /// on the correlation. The id arrives as an explicit argument here (the one
+  /// place it is not a task-local), so the field is `%id` straight from the
+  /// parameter. The span is entered for the synchronous body, so the
+  /// `Delivery::with_correlation` below captures it as `Span::current()` — every
+  /// downstream `actor.handle` then parents under this root, and a subscriber can
+  /// group the whole run by `correlation`.
+  #[tracing::instrument(
+    name = "run",
+    skip_all,
+    fields(correlation = %id, entrypoint = %entrypoint),
+  )]
   pub fn push(
     &self,
     entrypoint: &ActorId,
@@ -429,6 +479,16 @@ impl Engine {
   /// wants the count to survive a crash persists it alongside the job and passes
   /// it back in here. `0` is normalized to `1` (a delivery is always at least
   /// one attempt). Outcomes are identical to `push_durable`.
+  ///
+  /// Like [`push`](Self::push), the run's **root** `run` span — keyed on the
+  /// correlation, plus the re-delivery `attempt`. Async, so the span also spans
+  /// the awaited outcome (the at-least-once delivered/handled/lost result lands
+  /// under this root).
+  #[tracing::instrument(
+    name = "run",
+    skip_all,
+    fields(correlation = %id, entrypoint = %entrypoint, attempt = attempt),
+  )]
   pub async fn push_durable_attempt(
     &self,
     entrypoint: &ActorId,
