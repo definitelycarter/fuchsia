@@ -11,7 +11,9 @@
 > `node.*` lifecycle-event family (restarting / revived / rebuild_failed /
 > teardown_failed / spawned / stopped — the supervisor still logs these ad hoc);
 > the `attempt` field on `actor.handle` and the `dead_letter` event's
-> reason-detail payload; and `schedule.fire` re-entry. Builds on
+> reason-detail payload; `schedule.fire` re-entry; and the **no-run sentinel**
+> (`Delivery::new` / schedule `unwrap_or_default` must yield a recognizable `none`,
+> not a minted id — see the two-identities rule). Builds on
 > [Per-Message Correlation Id](./message-correlation-id.md).
 
 ## Concept
@@ -132,6 +134,80 @@ Three primitives, used for what each is good at — they compose rather than com
 Each transition typically does all three: bump the counter, fire the event, inside
 the span. The counter is the dashboard, the event is the per-occurrence detail, the
 span is the context that ties it to a run.
+
+### Two identities, never conflated
+
+The spans and events above carry **two distinct identifiers**, and the whole
+discipline is keeping them separate:
+
+1. **Structural trace identity** — the `tracing`/OTel span tree (`trace_id`,
+   spans, parent / `follows_from` links). It is *universal*: **every** operation
+   gets a span — data-plane, control-plane, a panic restart, a timer fire — and it
+   needs zero domain knowledge. Synchronous containment is a parent span; an async
+   or cross-task handoff is a `follows_from` link (the whole basis of the `run`
+   root, `node.restart`, and the engine-decoupling work).
+2. **Correlation id** — the run id. A *domain* identity meaning "this is the run
+   caused by external event X". It is **not** on every span; it is a field that
+   *rides on* spans **only where a run actually exists**, and is deliberately
+   **absent** on work that is not part of a run. That absence is correct, not a gap.
+
+The one trap is **fabricating a correlation id for work that has no run** — a
+synthetic/default id on a control-plane op or a restart. It pollutes the run-space
+(so "show me run X" returns infrastructure noise) and, for a product that uses the
+correlation for action→state lineage, corrupts that lineage with a false cause.
+
+**The decision rule** — this answers every "does this entrypoint take a
+correlation id?":
+
+| Kind of work | Correlation | Trace |
+|---|---|---|
+| **Run trigger** — external ingress (`push` / `push_durable` from a webhook / MQTT / scheduled job) | **mint** (or adopt an external id) | new `run` span |
+| **Run continuation** — an `emit`, a `route`, a scheduled self-message that continues the run | **propagate** the in-scope id | child span |
+| **Control-plane / lifecycle** — `add_node`/`add_edge`/`remove_graph`, a panic restart, a revival, a bring-up | **none** | span + `follows_from` to its cause |
+
+The litmus: *is this work being done **on behalf of** a run?* If yes → propagate.
+If it was merely **triggered by** one → **link, don't inherit** (a `follows_from`,
+and optionally the causing run recorded as a `caused_by` *attribute* — never
+adopted as the work's own id; e.g. an auto-restart can record the crashing
+message's run as `caused_by` without becoming part of it). If neither → span only.
+fuchsia already lands this: `push`/`push_durable` take a correlation;
+`add_node`/`add_edge`/`remove_graph` and `node.restart`/`node.teardown` do not —
+they are `follows_from`-linked instead.
+
+**The no-run sentinel (a fix this rule demands).** Because fabrication is the trap,
+the one place fuchsia can currently fabricate must be closed:
+`CorrelationId::current().unwrap_or_default()` (in `Delivery::new` and the schedule
+capability) **mints a fresh `cid-N` when no run is in scope** — so a detached timer
+or a no-run construction produces a real-looking run id. The "no run in scope" case
+must resolve to a recognizable **`none`** sentinel that run-queries filter out, not
+a minted id, so non-run work can never masquerade as a run.
+
+The standard, in one line: *trace everything (structural, universal,
+`follows_from` for async/lifecycle); correlate only runs (mint at a trigger,
+propagate through, absent on control-plane/lifecycle — link, never inherit). One id
+is OTel trace context; the other is domain baggage — never let the second look
+present where there is no run.*
+
+### The identity ladder
+
+Those two are the *kinds*; concretely fuchsia carries four ids, coarsest to
+finest, plus the run id that rides only where there's a run:
+
+| Id | Granularity | Rides on | Kind |
+|---|---|---|---|
+| `node` (`node_id`) | the **registration** — a stable graph node | every span (`node` field) | structural |
+| `generation` | one **instance** — changes per (re)build | the lifecycle spans (`node.bringup`, `node.restart`) + `actor.handle` | structural |
+| `invocation` (`invocation_id`) | one `handle` call — per message / attempt | `actor.handle` (≈ its span id) | structural |
+| `correlation` (`execution_id`) | the **run** a message belongs to | `run`, `actor.handle`, events — **not** control-plane | domain |
+
+The first three are **structural / lifecycle** identities — always present, no run
+required; `correlation` is the **domain** run id, present only on run work (per the
+rule above). `generation` (the instance id) and `invocation` — renamed from
+`task_id`, which misleadingly read as the tokio task — are introduced by the
+[Supervised Node Lifecycle](./supervised-bringup.md) RFC. Recording `generation` on
+`actor.handle` is what lets a trace say *which instance* of a node handled a
+message; on `node.bringup` / `node.restart` it says *which incarnation* is coming up
+or rebuilding.
 
 ### `fuchsia-engine` — the root and the route (the critical piece)
 
@@ -370,8 +446,10 @@ page) so every span and event speaks it:
 
 | Field | Meaning | Source |
 |-------|---------|--------|
-| `correlation` | The run id — the primary grouping key | `CorrelationId` / `ctx.execution_id` |
-| `node` | Which actor (stable spawn-time id) | `ActorId` / `ctx.node_id` |
+| `correlation` | The run id — the primary grouping key (run work only) | `CorrelationId` / `ctx.execution_id` |
+| `node` | The registration — stable graph node | `ActorId` / `ctx.node_id` |
+| `generation` | Which instance (changes per (re)build) | the supervisor / lifecycle |
+| `invocation` | One `handle` call (was `task_id`) | `ctx.invocation_id` |
 | `port` | Named output port on an emit/route | route arg |
 | `kind` | Message type (`msg.type_`) | `Message` |
 | `attempt` | Per-message attempt (retry/re-delivery) | `Delivery::attempts` |
@@ -501,3 +579,13 @@ only correlation surface they ever need.
 - Decide whether `Engine::push` returning the offer outcome (the roadmap's
   uncounted-`push`-shed gap) should also be the `outcome` field on the `run` span —
   the two are the same information and could land together.
+- **No-run sentinel.** Replace the `CorrelationId::current().unwrap_or_default()`
+  fabrication in `Delivery::new` and the schedule capability with a recognizable
+  `none` (so a detached/no-run construction never looks like a run), and make
+  run-queries filter it. Settle the representation — a reserved string (`"-"`,
+  `"none"`) vs. an `Option<CorrelationId>` on the no-run paths — so the wire/field
+  form is unambiguous.
+- **`caused_by` on lifecycle spans.** An auto (panic) restart *does* have a
+  knowable cause — the crashing message's run. Record it as a `caused_by`
+  attribute on `node.restart` (plus the `follows_from` link) without adopting it as
+  the restart's own correlation — "link/attribute, don't inherit."
