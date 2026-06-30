@@ -337,10 +337,36 @@ impl Engine {
       .ids_in_group(group);
     tracing::Span::current().record("nodes", ids.len());
 
+    // The stop loop is **best-effort** lifecycle teardown; the authoritative
+    // router removal is `remove_group` below, and it MUST always run — so the loop
+    // never early-returns. A node can die (and deregister from the registry)
+    // concurrently between the `ids_in_group` snapshot above and this `stop`;
+    // `stop` then returns `ActorNotFound`, which here means "already stopped",
+    // exactly the teardown outcome we want. The old `stop(id)?` early-returned on
+    // it, skipping `remove_group` and leaving the rest of the group registered in
+    // the router — and a sibling that then exited its task by a non-`rx`-close
+    // path (an `OnError::Fail` stop, which the supervisor classifies as a clean
+    // shutdown because `stop` had set its `stopping` flag, so it does *not*
+    // deregister) was left registered with a dropped mailbox: a routable
+    // **zombie**. Only a poisoned registry lock is a genuine error; defer it and
+    // surface it *after* the router is cleared, so a teardown still completes.
+    let mut deferred: Option<EngineError> = None;
     {
       let mut runtime = self.runtime.lock().await;
       for id in &ids {
-        runtime.stop(id)?;
+        match runtime.stop(id) {
+          // Stopped now, or already gone (a concurrent death) — both are the
+          // teardown outcome; keep going.
+          Ok(()) | Err(RuntimeError::ActorNotFound(_)) => {}
+          // A poisoned registry lock: remember the first one, but still finish
+          // clearing the router below rather than leaving the group half-removed.
+          Err(RuntimeError::Lock) => {
+            deferred.get_or_insert(EngineError::Lock);
+          }
+          // No other `stop` outcome exists today; treat a future one as benign
+          // for teardown (the router cleanup still runs) rather than abort.
+          Err(_) => {}
+        }
       }
     }
 
@@ -362,7 +388,13 @@ impl Engine {
       .write()
       .map_err(|_| EngineError::Lock)?
       .remove_group(group);
-    Ok(())
+
+    // The router is now authoritatively cleared for the group; surface a
+    // registry-lock error from the stop loop (if any) only after that cleanup.
+    match deferred {
+      Some(err) => Err(err),
+      None => Ok(()),
+    }
   }
 
   /// Deliver an external event into an entrypoint actor's mailbox.
