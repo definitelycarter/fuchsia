@@ -33,3 +33,4 @@
 - [JavaScript Actor (QuickJS)](./rfcs/javascript-actor.md)
 - [`from_fn` Actors & Default Lifecycle](./rfcs/from-fn-actors.md)
 - [Engine Stress Testing](./rfcs/engine-stress-testing.md)
+- [Observability & Tracing](./rfcs/observability.md)

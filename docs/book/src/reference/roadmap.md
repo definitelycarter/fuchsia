@@ -12,6 +12,7 @@ lands (no strikethrough).
 | JavaScript actor (QuickJS) | Dynamic JS scripts in an embedded QuickJS interpreter (`rquickjs`, no compile), mirroring the Lua pack; `await fetch()` via an injected async capability. Compile-to-wasm is the hardened alternative. See [RFC](../rfcs/javascript-actor.md). | `fuchsia-actor-js` (new), `fuchsia-actor` |
 | More conditioning operators | Throttle, window, threshold-over-time to round out the existing `debounce`/`deadband`/`dedup` set | `fuchsia-actor-builtins` |
 | Config import for guests | Forward a `Component` node's `settings` into a Wasm/Lua guest (e.g. a `config.get(key)` import). Today only native actors read `settings`; guests receive only `ctx` + payload. | `fuchsia-actor-wasm`, `fuchsia-actor-lua` |
+| Observability & tracing | `tracing` spans and events keyed on the correlation id — an engine-owned `run` root + `engine.route` span, the correlation as a field on every `actor.handle`, control-plane spans on the topology ops (`add_node`/`add_edge`/`remove_graph`/`restart_node`), and structured events for every internal transition (shed, no-route, poison, dead-letter, retry, node restart/death). Counters aggregate, spans scope, events pinpoint. Extends the existing delivery-carried span backbone. See [RFC](../rfcs/observability.md). | `fuchsia-engine`, `fuchsia-runtime`, `fuchsia-transport`, host |
 | Capability-style device binding | Bind each actor instance to one host-side device handle (BLE/MQTT/…) so guest-side functions never name addresses | host crates, per-capability WIT |
 | Distributed actors | Patterns + sample host code for splitting a graph across processes via transport actors | likely host docs, not core |
 
@@ -46,7 +47,7 @@ lands (no strikethrough).
 |----------|---------|
 | Machine-readable schema for actor configs | Each actor dictates its own `settings` type; no schema for tooling/plugin-store UI. Could derive via `schemars`. |
 | Replay / in-flight inspection | Should the runtime support observing messages in mailboxes for debugging? |
-| Routing counters' surface | The engine now tracks per-`(node, port)` `delivered`/`shed`/`no_route` counts in-process ([named output ports](../rfcs/output-ports.md)); whether they graduate to a metrics/trace export is a later observability decision. |
+| Routing counters' surface | The engine now tracks per-`(node, port)` `delivered`/`shed`/`no_route` counts in-process ([named output ports](../rfcs/output-ports.md)); whether they graduate to a metrics/trace export is a later observability decision. [Observability & tracing](../rfcs/observability.md) takes a first stance: spans are the trace surface, counters stay as the cheap always-on gauges, and export is a later layer. |
 
 ## Housekeeping
 
