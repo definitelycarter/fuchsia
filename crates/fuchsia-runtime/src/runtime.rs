@@ -640,7 +640,14 @@ async fn run_actor(
     }
   }
 
-  let _ = actor.teardown(&ctx).await;
+  // Teardown runs detached (when the mailbox closes — a stop / remove_graph),
+  // not under the caller; give it its own `node.teardown` span, a root keyed on
+  // the node. `.instrument(..)` enters it across the async teardown.
+  use tracing::Instrument as _;
+  let _ = actor
+    .teardown(&ctx)
+    .instrument(tracing::info_span!("node.teardown", node = %node))
+    .await;
 }
 
 /// Run one delivery through `handle`, applying the node's [`OnError`] policy.
