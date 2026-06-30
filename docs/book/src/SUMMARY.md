@@ -34,3 +34,5 @@
 - [`from_fn` Actors & Default Lifecycle](./rfcs/from-fn-actors.md)
 - [Engine Stress Testing](./rfcs/engine-stress-testing.md)
 - [Observability & Tracing](./rfcs/observability.md)
+- [Supervised Node Lifecycle](./rfcs/supervised-bringup.md)
+- [In-Graph Origination](./rfcs/in-graph-origination.md)
