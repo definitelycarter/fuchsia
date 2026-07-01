@@ -1,9 +1,14 @@
 # RFC: In-Graph Origination (Source Actors)
 
-> **Status: proposed.** Tracked in the [roadmap](../reference/roadmap.md#features)
-> Features table until it lands. Realizes the *external-ingress → mint* row of the
-> [observability](./observability.md) two-identities rule, and closes its
-> no-run-sentinel follow-up.
+> **Status: superseded by [Lifecycle-Gated Routing](./lifecycle-gated-routing.md).**
+> The motivation here stands — a source actor *should* be able to start a run from
+> inside the graph — but the objection that made it look unsafe (a detached tap
+> injecting into a draining graph) is closed by *gating routing on lifecycle state*,
+> not by restricting who may originate. Origination is reinstated there as a **gated
+> routing primitive** (one caller of the same mint-and-route the host's `push` uses),
+> with the source-actor *pump* model and the mint/propagate predicate. Read this for
+> the origination/continuation framing and the 2×2; read the successor for the
+> mechanism that makes it land.
 
 ## Concept
 

@@ -36,3 +36,4 @@
 - [Observability & Tracing](./rfcs/observability.md)
 - [Supervised Node Lifecycle](./rfcs/supervised-bringup.md)
 - [In-Graph Origination](./rfcs/in-graph-origination.md)
+- [Lifecycle-Gated Routing](./rfcs/lifecycle-gated-routing.md)

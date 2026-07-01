@@ -5,14 +5,17 @@
 > and generalized into one node lifecycle; it **revises**
 > [Node Failure Handling](./node-failure-handling.md)'s permanent-death into
 > CrashLoopBackOff. Its bring-up trace is the
-> [observability](./observability.md) `node.bringup` root.
+> [observability](./observability.md) `node.bringup` root, and its per-instance
+> `Actual` state — including `Draining` — is the accept-state
+> [Lifecycle-Gated Routing](./lifecycle-gated-routing.md)'s gate reads.
 
 ## Concept
 
 Model a node's whole life as a **controller**. A durable **registration** (the
 node) carries a host-set **desired state** (`Started` / `Stopped`), and one or
 more **instances** are reconciled toward it — each instance with an **actual
-state** the supervisor drives: `Starting → Running → Backoff → Stopped`.
+state** the supervisor drives: `Starting → Running → Draining → Stopped` (plus
+`Backoff` on a fault).
 
 Birth and death stop being separate mechanisms: **a failed bring-up and a crash
 are the same event** — an instance dropping to `Backoff` and retrying
@@ -60,7 +63,7 @@ terminal park; and a node gains an observable state a host reconciler reads.
   (+ `Paused` later). Implicit today (`add_node` ⇒ `Started`, `remove` ⇒
   `Stopped`); explicit `start`/`stop`/`pause` actions later.
 - **Actual** lives on each **instance**, driven by the supervisor: `Starting |
-  Running | Backoff | Stopped`.
+  Running | Draining | Backoff | Stopped`.
 - **Two levels of reconciliation**, which is the whole point: the **supervisor**
   drives *instance actual → node desired* (low-level, like a kubelet); the **host**
   reconciler sets *desired* and watches *actual* (high-level, like a Deployment
@@ -77,7 +80,8 @@ stateDiagram-v2
   Starting --> Backoff: setup fails
   Running --> Backoff: crash or fault
   Backoff --> Starting: retry (capped backoff)
-  Running --> Stopped: desired Stopped (graceful teardown)
+  Running --> Draining: desired Stopped (seal, drain in-flight)
+  Draining --> Stopped: quiescent (in-flight drained)
   Starting --> Stopped: desired Stopped
   Backoff --> Stopped: desired Stopped
   Stopped --> [*]
@@ -88,6 +92,14 @@ unification of birth and death. `Backoff ⇄ Starting` loops (capped) as long as
 desired is `Started`; the **only terminal state is `Stopped`**, and it is always
 **intentional** (desired `Stopped`). So an abnormal failure is never terminal —
 it retries; only the host stops a node.
+
+The graceful stop path — `Running → Draining → Stopped` — runs through **`Draining`**:
+on `desired = Stopped` the instance **seals** (its ingress stops accepting new runs
+while in-flight continuations drain), then reaches `Stopped` once quiescent or the
+`teardown_deadline` fires. `Draining` is the per-node accept-state the gate reads in
+[Lifecycle-Gated Routing](./lifecycle-gated-routing.md); crash (`Running → Backoff`) and
+bring-up (`Starting` / `Backoff → Stopped`) **skip** it — no running instance means
+nothing in flight to drain.
 
 ### This revises Node-Failure-Handling
 
